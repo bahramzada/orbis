@@ -48,3 +48,10 @@
 - **Error:** FastAPI failed during startup with asyncpg SSL configuration and certificate verification errors.
 - **Failed Attempts:** Passing `DATABASE_SSL=require` directly as asyncpg `ssl` config.
 - **Solution:** Mapped `DATABASE_SSL=require` to an encrypted SSL context without certificate verification, matching common Postgres `sslmode=require` behavior; `verify-ca`/`verify-full` still use default certificate verification.
+
+## Completed Workflow Kept Showing Spinning Log Rows
+
+- **Context/Component:** Frontend agent activity log
+- **Error:** Historical `running` log entries kept rendering with the animated spinner after the workflow had already produced results.
+- **Failed Attempts:** Treating each log entry status as a permanent visual state made old start events look like active work.
+- **Solution:** Track the latest log index per agent and animate only the latest `running` entry while the workflow is actively running; older `running` entries render as settled activity events.

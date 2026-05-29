@@ -6,6 +6,7 @@ import {
   Building2,
   BrainCircuit,
   CheckCircle2,
+  ChevronDown,
   Loader2,
   Network,
   Play,
@@ -16,9 +17,18 @@ import { fallbackGraph, fetchAgents, runWorkflowStream } from "./api";
 import type { AgentGraph, AgentNode, WorkflowLog, WorkflowRun } from "./types";
 
 type ViewMode = "visual" | "office";
+type RunState = "idle" | "running" | "success" | "error";
 
 const starterTask =
   "Design a customer support automation flow for a small SaaS team.";
+
+const visualPositionOverrides: Record<string, Pick<AgentNode, "x" | "y">> = {
+  supervisor: { x: 50, y: 16 },
+  researcher: { x: 24, y: 50 },
+  strategist: { x: 32, y: 70 },
+  builder: { x: 68, y: 70 },
+  reviewer: { x: 76, y: 50 }
+};
 
 function App() {
   const [graph, setGraph] = useState<AgentGraph>(fallbackGraph);
@@ -27,7 +37,8 @@ function App() {
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [logs, setLogs] = useState<WorkflowLog[]>([]);
   const [error, setError] = useState("");
-  const [isRunning, setIsRunning] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
+  const isRunning = runState === "running";
 
   const supervisor = useMemo(
     () => graph.agents.find((agent) => agent.kind === "supervisor"),
@@ -44,23 +55,60 @@ function App() {
       .catch(() => setGraph(fallbackGraph));
   }, []);
 
+  useEffect(() => {
+    if (runState !== "success") {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => setRunState("idle"), 2200);
+    return () => window.clearTimeout(timeout);
+  }, [runState]);
+
+  function handleTaskChange(value: string) {
+    setTask(value);
+    if (!isRunning) {
+      setError("");
+      setRunState("idle");
+    }
+  }
+
   async function handleRun() {
     setError("");
     setRun(null);
     setLogs([]);
-    setIsRunning(true);
+    setRunState("running");
     try {
       const result = await runWorkflowStream(task, (log) => {
         setLogs((currentLogs) => [...currentLogs, log]);
       });
       setRun(result);
       setLogs(result.logs);
+      setRunState("success");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Workflow failed.");
-    } finally {
-      setIsRunning(false);
+      setRunState("error");
     }
   }
+
+  const runButtonLabel =
+    runState === "running"
+      ? "Running"
+      : runState === "success"
+        ? "Completed"
+        : runState === "error"
+          ? "Retry"
+          : "Run";
+
+  const runButtonIcon =
+    runState === "running" ? (
+      <Loader2 className="spin" size={18} />
+    ) : runState === "success" ? (
+      <CheckCircle2 size={18} />
+    ) : runState === "error" ? (
+      <AlertTriangle size={18} />
+    ) : (
+      <Play size={18} />
+    );
 
   return (
     <main className="app-shell">
@@ -111,17 +159,24 @@ function App() {
 
           <label className="task-box">
             <span>Task</span>
-            <textarea value={task} onChange={(event) => setTask(event.target.value)} />
+            <textarea
+              value={task}
+              onChange={(event) => handleTaskChange(event.currentTarget.value)}
+            />
+            <span className="task-helper">
+              <span>{task.trim().length}/4000</span>
+              <span>{isRunning ? "Workflow active" : run ? "Last run ready" : "No run yet"}</span>
+            </span>
           </label>
 
           <button
-            className="run-button"
+            className={`run-button ${runState}`}
             disabled={isRunning || task.trim().length < 3}
             onClick={handleRun}
             type="button"
           >
-            {isRunning ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            Run
+            {runButtonIcon}
+            {runButtonLabel}
           </button>
 
           {error ? <div className="error-box">{error}</div> : null}
@@ -134,11 +189,16 @@ function App() {
 }
 
 function VisualGraph({ graph }: { graph: AgentGraph }) {
+  const displayAgents = graph.agents.map((agent) => ({
+    ...agent,
+    ...(visualPositionOverrides[agent.id] ?? {})
+  }));
+
   return (
     <div className="visual-canvas">
       {graph.edges.map((edge) => {
-        const source = graph.agents.find((agent) => agent.id === edge.source);
-        const target = graph.agents.find((agent) => agent.id === edge.target);
+        const source = displayAgents.find((agent) => agent.id === edge.source);
+        const target = displayAgents.find((agent) => agent.id === edge.target);
         if (!source || !target) {
           return null;
         }
@@ -152,7 +212,7 @@ function VisualGraph({ graph }: { graph: AgentGraph }) {
         );
       })}
 
-      {graph.agents.map((agent) => (
+      {displayAgents.map((agent) => (
         <AgentBadge key={agent.id} agent={agent} />
       ))}
     </div>
@@ -240,11 +300,16 @@ function ActivityLog({
   if (logs.length === 0) {
     return (
       <div className="empty-state">
-        <CheckCircle2 size={18} />
-        <span>{isRunning ? "Starting" : "Ready"}</span>
+        {isRunning ? <Loader2 className="spin" size={18} /> : <CheckCircle2 size={18} />}
+        <span>{isRunning ? "Starting workflow" : "No run yet"}</span>
       </div>
     );
   }
+
+  const latestLogIndexByAgent = new Map<string, number>();
+  logs.forEach((log, index) => {
+    latestLogIndexByAgent.set(log.agent_id, index);
+  });
 
   return (
     <div className="activity-log">
@@ -253,32 +318,51 @@ function ActivityLog({
         <span>{isRunning ? "Running" : "Done"}</span>
       </div>
       {logs
-        .slice()
+        .map((log, index) => ({ index, log }))
         .reverse()
-        .map((log) => (
-          <div className={`log-row ${log.status}`} key={`${log.created_at}-${log.agent_id}`}>
-            <LogStatusIcon status={log.status} />
-            <div>
-              <div className="log-meta">
-                <strong>{log.agent_name}</strong>
-                <time>{formatLogTime(log.created_at)}</time>
+        .map(({ index, log }) => {
+          const isActiveLog =
+            isRunning &&
+            log.status === "running" &&
+            latestLogIndexByAgent.get(log.agent_id) === index;
+
+          return (
+            <div
+              className={`log-row ${log.status} ${isActiveLog ? "active" : "settled"}`}
+              key={`${log.created_at}-${log.agent_id}-${index}`}
+            >
+              <LogStatusIcon status={log.status} isActive={isActiveLog} />
+              <div>
+                <div className="log-meta">
+                  <strong>{log.agent_name}</strong>
+                  <time>{formatLogTime(log.created_at)}</time>
+                </div>
+                <span>{log.message}</span>
               </div>
-              <span>{log.message}</span>
             </div>
-          </div>
-        ))}
+          );
+        })}
     </div>
   );
 }
 
-function LogStatusIcon({ status }: { status: WorkflowLog["status"] }) {
+function LogStatusIcon({
+  status,
+  isActive
+}: {
+  status: WorkflowLog["status"];
+  isActive: boolean;
+}) {
   if (status === "completed") {
     return <CheckCircle2 size={17} />;
   }
   if (status === "failed") {
     return <AlertTriangle size={17} />;
   }
-  return <Loader2 className="spin" size={17} />;
+  if (isActive) {
+    return <Loader2 className="spin" size={17} />;
+  }
+  return <Activity size={17} />;
 }
 
 function formatLogTime(value: string) {
@@ -300,7 +384,10 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
       <details className="plan-output">
         <summary>
           <span>Plan</span>
-          <small>{run.plan.length} agents</small>
+          <span className="summary-meta">
+            <small>{run.plan.length} agents</small>
+            <ChevronDown size={16} />
+          </span>
         </summary>
         {run.plan.map((item) => (
           <div className="result-row" key={item.worker_id}>
@@ -312,7 +399,10 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
       <h3>Worker Outputs</h3>
       {run.worker_results.map((result) => (
         <details className="worker-output" key={result.worker_id}>
-          <summary>{result.worker_name}</summary>
+          <summary>
+            <span>{result.worker_name}</span>
+            <ChevronDown size={16} />
+          </summary>
           <MarkdownContent content={result.output} />
         </details>
       ))}
