@@ -31,7 +31,7 @@ ROLE_INSTRUCTIONS: dict[str, str] = {
 }
 
 
-def build_supervisor_plan_system_prompt() -> str:
+def build_supervisor_plan_system_prompt(memory_context: str = "") -> str:
     worker_list = ", ".join(WORKER_IDS)
     return dedent(
         f"""
@@ -54,6 +54,9 @@ def build_supervisor_plan_system_prompt() -> str:
           relevant objective or expected_output.
         - Do not ask for credentials, secrets, or private keys.
         - Do not delegate actions outside the user's task.
+
+        Project memory:
+        {memory_context or "No project memory was selected."}
 
         Few-shot example:
         User task: Design a launch plan for a new coffee shop.
@@ -90,6 +93,8 @@ def build_worker_system_prompt(
     worker_name: str,
     worker_role: str,
     worker_goal: str,
+    custom_system_prompt: str = "",
+    memory_context: str = "",
 ) -> str:
     role_instruction = ROLE_INSTRUCTIONS.get(
         worker_id,
@@ -102,6 +107,12 @@ def build_worker_system_prompt(
 
         Role-specific instruction:
         {role_instruction}
+
+        Project memory:
+        {memory_context or "No project memory was selected."}
+
+        Additional profile instruction:
+        {custom_system_prompt or "Use the default role behavior."}
 
         Response contract:
         - Match the language of the main user task.
@@ -139,9 +150,12 @@ def build_worker_user_prompt(
     ).strip()
 
 
-def build_synthesis_system_prompt() -> str:
+def build_synthesis_system_prompt(
+    output_format: str = "markdown",
+    memory_context: str = "",
+) -> str:
     return dedent(
-        """
+        f"""
         You are the Orbis supervisor.
         Synthesize the worker outputs into one final answer for the user.
 
@@ -155,6 +169,11 @@ def build_synthesis_system_prompt() -> str:
           ## \u018fsas N\u0259tic\u0259l\u0259r
           ## Riskl\u0259r
           ## N\u00f6vb\u0259ti Add\u0131mlar
+        - Desired output mode: {output_format}. If it is not markdown, keep the
+          same content but structure it as a compact {output_format} artifact.
+
+        Project memory:
+        {memory_context or "No project memory was selected."}
 
         Quality constraints:
         - Base the answer only on the user task and worker outputs.

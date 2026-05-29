@@ -49,6 +49,9 @@ def test_database_performance_indexes_are_declared() -> None:
     assert "ix_workflow_runs_completed_at_desc" in index_names
     assert "ix_workflow_runs_status_completed_at_desc" in index_names
     assert "ix_workflow_logs_run_id_created_at" in index_names
+    assert "ix_memory_items_enabled_created" in index_names
+    assert "ix_tool_calls_run_id_created" in index_names
+    assert "ix_run_evaluations_run_id_created" in index_names
 
 
 def test_pool_settings_are_configurable() -> None:

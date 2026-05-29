@@ -5,17 +5,49 @@ import {
   AlertTriangle,
   Building2,
   BrainCircuit,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
+  ClipboardCheck,
+  Gauge,
   Loader2,
   Network,
   Play,
+  RotateCcw,
+  Save,
+  SlidersHorizontal,
+  Sparkles,
   Users,
   XCircle
 } from "lucide-react";
 
-import { fallbackGraph, fetchAgents, runWorkflowStream } from "./api";
-import type { AgentGraph, AgentNode, WorkflowLog, WorkflowRun } from "./types";
+import {
+  compareEvaluations,
+  createMemory,
+  fallbackGraph,
+  fetchAgentProfiles,
+  fetchAgents,
+  fetchMemories,
+  fetchTemplates,
+  previewPlan,
+  rerunSynthesis,
+  rerunWorker,
+  runWorkflowStream,
+  saveAgentProfiles
+} from "./api";
+import type {
+  AgentGraph,
+  AgentNode,
+  AgentProfile,
+  DelegationItem,
+  EvaluationResult,
+  MemoryItem,
+  OutputFormat,
+  ToolCall,
+  WorkflowTemplate,
+  WorkflowLog,
+  WorkflowRun
+} from "./types";
 
 type ViewMode = "visual" | "office";
 type RunState = "idle" | "running" | "success" | "error";
@@ -24,6 +56,15 @@ const starterTask =
   "Design a customer support automation flow for a small SaaS team.";
 const logPreviewLimit = 80;
 const markdownInitialLineLimit = 140;
+const outputFormats: OutputFormat[] = [
+  "markdown",
+  "checklist",
+  "roadmap",
+  "table",
+  "json",
+  "prd",
+  "test_plan"
+];
 
 const visualPositionOverrides: Record<string, Pick<AgentNode, "x" | "y">> = {
   supervisor: { x: 50, y: 16 },
@@ -77,8 +118,24 @@ function App() {
   const [task, setTask] = useState(starterTask);
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [logs, setLogs] = useState<WorkflowLog[]>([]);
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [error, setError] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [selectedMemoryIds, setSelectedMemoryIds] = useState<string[]>([]);
+  const [planDraft, setPlanDraft] = useState<DelegationItem[] | null>(null);
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>("markdown");
+  const [enableReviewPhase, setEnableReviewPhase] = useState(false);
+  const [memoryDraft, setMemoryDraft] = useState({
+    title: "",
+    category: "company context",
+    content: ""
+  });
+  const [planState, setPlanState] = useState<RunState>("idle");
+  const [profileSaveState, setProfileSaveState] = useState<RunState>("idle");
+  const [evaluations, setEvaluations] = useState<EvaluationResult[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isRunning = runState === "running";
 
@@ -98,6 +155,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    fetchAgentProfiles().then(setProfiles).catch(() => setProfiles([]));
+    fetchTemplates().then(setTemplates).catch(() => setTemplates([]));
+    fetchMemories().then(setMemories).catch(() => setMemories([]));
+  }, []);
+
+  useEffect(() => {
     if (runState !== "success") {
       return undefined;
     }
@@ -111,7 +174,96 @@ function App() {
     if (!isRunning) {
       setError("");
       setRunState("idle");
+      setPlanDraft(null);
     }
+  }
+
+  function handleProfileChange(
+    id: string,
+    field: keyof AgentProfile,
+    value: string | number | boolean
+  ) {
+    setProfiles((currentProfiles) =>
+      currentProfiles.map((profile) =>
+        profile.id === id ? { ...profile, [field]: value } : profile
+      )
+    );
+  }
+
+  async function handleSaveProfiles() {
+    setProfileSaveState("running");
+    try {
+      const saved = await saveAgentProfiles(profiles);
+      setProfiles(saved);
+      setProfileSaveState("success");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Profiles could not be saved.");
+      setProfileSaveState("error");
+    }
+  }
+
+  async function handleCreateMemory() {
+    if (!memoryDraft.title.trim() || !memoryDraft.content.trim()) {
+      return;
+    }
+    try {
+      const item = await createMemory({
+        title: memoryDraft.title.trim(),
+        category: memoryDraft.category.trim() || "general",
+        content: memoryDraft.content.trim(),
+        enabled: true
+      });
+      setMemories((currentMemories) => [item, ...currentMemories]);
+      setSelectedMemoryIds((currentIds) => [item.id, ...currentIds]);
+      setMemoryDraft({ title: "", category: "company context", content: "" });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Memory could not be saved.");
+    }
+  }
+
+  function toggleMemory(id: string) {
+    setSelectedMemoryIds((currentIds) =>
+      currentIds.includes(id)
+        ? currentIds.filter((currentId) => currentId !== id)
+        : [...currentIds, id]
+    );
+  }
+
+  function handleTemplateChange(templateId: string) {
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) {
+      return;
+    }
+    setTask(template.task_prompt);
+    setOutputFormat(template.output_format);
+    setPlanDraft(null);
+  }
+
+  async function handlePreviewPlan() {
+    setPlanState("running");
+    setError("");
+    try {
+      const plan = await previewPlan(task, selectedMemoryIds, profiles);
+      setPlanDraft(plan);
+      setPlanState("success");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Plan could not be created.");
+      setPlanState("error");
+    }
+  }
+
+  function handlePlanChange(
+    workerId: string,
+    field: keyof DelegationItem,
+    value: string | boolean
+  ) {
+    setPlanDraft((currentPlan) =>
+      currentPlan
+        ? currentPlan.map((item) =>
+            item.worker_id === workerId ? { ...item, [field]: value } : item
+          )
+        : currentPlan
+    );
   }
 
   async function handleRun() {
@@ -121,13 +273,30 @@ function App() {
     setError("");
     setRun(null);
     setLogs([]);
+    setToolCalls([]);
+    setEvaluations([]);
     setRunState("running");
     try {
-      const result = await runWorkflowStream(task, (log) => {
-        setLogs((currentLogs) => [...currentLogs, log]);
-      }, controller.signal);
+      const result = await runWorkflowStream(
+        task,
+        (log) => {
+          setLogs((currentLogs) => [...currentLogs, log]);
+        },
+        controller.signal,
+        {
+          memory_ids: selectedMemoryIds,
+          agent_profiles: profiles,
+          plan: planDraft,
+          output_format: outputFormat,
+          enable_review_phase: enableReviewPhase
+        },
+        (toolCall) => {
+          setToolCalls((currentToolCalls) => [...currentToolCalls, toolCall]);
+        }
+      );
       setRun(result);
       setLogs(result.logs);
+      setToolCalls(result.tool_calls);
       setRunState("success");
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") {
@@ -145,6 +314,50 @@ function App() {
 
   function handleCancelRun() {
     abortControllerRef.current?.abort();
+  }
+
+  async function handleRerunWorker(workerId: string) {
+    if (!run) {
+      return;
+    }
+    setError("");
+    try {
+      const detail = await rerunWorker(run.run_id, workerId, {
+        memory_ids: selectedMemoryIds,
+        agent_profiles: profiles
+      });
+      setRun(detail);
+      setEvaluations(detail.evaluations);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Worker rerun failed.");
+    }
+  }
+
+  async function handleRerunSynthesis() {
+    if (!run) {
+      return;
+    }
+    setError("");
+    try {
+      const detail = await rerunSynthesis(run.run_id, outputFormat, selectedMemoryIds);
+      setRun(detail);
+      setEvaluations(detail.evaluations);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Synthesis rerun failed.");
+    }
+  }
+
+  async function handleEvaluate() {
+    if (!run) {
+      return;
+    }
+    setError("");
+    try {
+      const scores = await compareEvaluations([run.run_id]);
+      setEvaluations(scores);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Evaluation failed.");
+    }
   }
 
   const runButtonLabel =
@@ -245,11 +458,323 @@ function App() {
           </div>
 
           {error ? <div className="error-box">{error}</div> : null}
+          <CapabilityControls
+            enableReviewPhase={enableReviewPhase}
+            memories={memories}
+            memoryDraft={memoryDraft}
+            outputFormat={outputFormat}
+            planDraft={planDraft}
+            planState={planState}
+            profileSaveState={profileSaveState}
+            profiles={profiles}
+            selectedMemoryIds={selectedMemoryIds}
+            templates={templates}
+            onCreateMemory={handleCreateMemory}
+            onMemoryDraftChange={setMemoryDraft}
+            onPlanChange={handlePlanChange}
+            onPreviewPlan={handlePreviewPlan}
+            onProfileChange={handleProfileChange}
+            onSaveProfiles={handleSaveProfiles}
+            onTemplateChange={handleTemplateChange}
+            onToggleMemory={toggleMemory}
+            onToggleReviewPhase={setEnableReviewPhase}
+            onOutputFormatChange={setOutputFormat}
+          />
           <ActivityLog logs={run?.logs.length ? run.logs : logs} isRunning={isRunning} />
-          <RunSummary run={run} />
+          <RunSummary
+            evaluations={evaluations}
+            run={run}
+            toolCalls={run?.tool_calls.length ? run.tool_calls : toolCalls}
+            onEvaluate={handleEvaluate}
+            onRerunSynthesis={handleRerunSynthesis}
+            onRerunWorker={handleRerunWorker}
+          />
         </aside>
       </section>
     </main>
+  );
+}
+
+function CapabilityControls({
+  enableReviewPhase,
+  memories,
+  memoryDraft,
+  outputFormat,
+  planDraft,
+  planState,
+  profileSaveState,
+  profiles,
+  selectedMemoryIds,
+  templates,
+  onCreateMemory,
+  onMemoryDraftChange,
+  onOutputFormatChange,
+  onPlanChange,
+  onPreviewPlan,
+  onProfileChange,
+  onSaveProfiles,
+  onTemplateChange,
+  onToggleMemory,
+  onToggleReviewPhase
+}: {
+  enableReviewPhase: boolean;
+  memories: MemoryItem[];
+  memoryDraft: { title: string; category: string; content: string };
+  outputFormat: OutputFormat;
+  planDraft: DelegationItem[] | null;
+  planState: RunState;
+  profileSaveState: RunState;
+  profiles: AgentProfile[];
+  selectedMemoryIds: string[];
+  templates: WorkflowTemplate[];
+  onCreateMemory: () => void;
+  onMemoryDraftChange: (value: { title: string; category: string; content: string }) => void;
+  onOutputFormatChange: (value: OutputFormat) => void;
+  onPlanChange: (
+    workerId: string,
+    field: keyof DelegationItem,
+    value: string | boolean
+  ) => void;
+  onPreviewPlan: () => void;
+  onProfileChange: (
+    id: string,
+    field: keyof AgentProfile,
+    value: string | number | boolean
+  ) => void;
+  onSaveProfiles: () => void;
+  onTemplateChange: (templateId: string) => void;
+  onToggleMemory: (id: string) => void;
+  onToggleReviewPhase: (value: boolean) => void;
+}) {
+  return (
+    <div className="capability-stack">
+      <details className="capability-panel">
+        <summary>
+          <span>
+            <Sparkles size={16} />
+            Workflow Templates
+          </span>
+          <ChevronDown size={16} />
+        </summary>
+        <div className="template-grid">
+          {templates.map((template) => (
+            <button
+              key={template.id}
+              onClick={() => onTemplateChange(template.id)}
+              type="button"
+            >
+              <strong>{template.name}</strong>
+              <small>{template.description}</small>
+            </button>
+          ))}
+        </div>
+        <label className="compact-field">
+          <span>Final output</span>
+          <select
+            value={outputFormat}
+            onChange={(event) => onOutputFormatChange(event.currentTarget.value as OutputFormat)}
+          >
+            {outputFormats.map((format) => (
+              <option key={format} value={format}>
+                {format.replace("_", " ")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="toggle-row">
+          <input
+            checked={enableReviewPhase}
+            onChange={(event) => onToggleReviewPhase(event.currentTarget.checked)}
+            type="checkbox"
+          />
+          <span>Second-stage reviewer sees worker outputs before final synthesis</span>
+        </label>
+      </details>
+
+      <details className="capability-panel">
+        <summary>
+          <span>
+            <SlidersHorizontal size={16} />
+            Agent Studio
+          </span>
+          <ChevronDown size={16} />
+        </summary>
+        <div className="profile-grid">
+          {profiles.map((profile) => (
+            <article className="profile-card" key={profile.id}>
+              <label className="toggle-row">
+                <input
+                  checked={profile.enabled}
+                  onChange={(event) =>
+                    onProfileChange(profile.id, "enabled", event.currentTarget.checked)
+                  }
+                  type="checkbox"
+                />
+                <strong>{profile.id}</strong>
+              </label>
+              <input
+                aria-label={`${profile.id} name`}
+                value={profile.name}
+                onChange={(event) => onProfileChange(profile.id, "name", event.currentTarget.value)}
+              />
+              <input
+                aria-label={`${profile.id} role`}
+                value={profile.role}
+                onChange={(event) => onProfileChange(profile.id, "role", event.currentTarget.value)}
+              />
+              <textarea
+                aria-label={`${profile.id} goal`}
+                value={profile.goal}
+                onChange={(event) => onProfileChange(profile.id, "goal", event.currentTarget.value)}
+              />
+              <div className="profile-controls">
+                <input
+                  aria-label={`${profile.id} model`}
+                  placeholder="default model"
+                  value={profile.model}
+                  onChange={(event) =>
+                    onProfileChange(profile.id, "model", event.currentTarget.value)
+                  }
+                />
+                <input
+                  aria-label={`${profile.id} temperature`}
+                  max="2"
+                  min="0"
+                  step="0.1"
+                  type="number"
+                  value={profile.temperature}
+                  onChange={(event) =>
+                    onProfileChange(profile.id, "temperature", Number(event.currentTarget.value))
+                  }
+                />
+                <input
+                  aria-label={`${profile.id} token limit`}
+                  max="8000"
+                  min="128"
+                  step="64"
+                  type="number"
+                  value={profile.max_tokens}
+                  onChange={(event) =>
+                    onProfileChange(profile.id, "max_tokens", Number(event.currentTarget.value))
+                  }
+                />
+              </div>
+              <textarea
+                aria-label={`${profile.id} system prompt`}
+                placeholder="Optional extra system prompt"
+                value={profile.system_prompt}
+                onChange={(event) =>
+                  onProfileChange(profile.id, "system_prompt", event.currentTarget.value)
+                }
+              />
+            </article>
+          ))}
+        </div>
+        <button className="secondary-action" onClick={onSaveProfiles} type="button">
+          {profileSaveState === "running" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+          Save Agent Studio
+        </button>
+      </details>
+
+      <details className="capability-panel">
+        <summary>
+          <span>
+            <BookOpen size={16} />
+            Memory Layer
+          </span>
+          <ChevronDown size={16} />
+        </summary>
+        <div className="memory-form">
+          <input
+            placeholder="Memory title"
+            value={memoryDraft.title}
+            onChange={(event) =>
+              onMemoryDraftChange({ ...memoryDraft, title: event.currentTarget.value })
+            }
+          />
+          <input
+            placeholder="Category"
+            value={memoryDraft.category}
+            onChange={(event) =>
+              onMemoryDraftChange({ ...memoryDraft, category: event.currentTarget.value })
+            }
+          />
+          <textarea
+            placeholder="Company context, brand voice, constraints..."
+            value={memoryDraft.content}
+            onChange={(event) =>
+              onMemoryDraftChange({ ...memoryDraft, content: event.currentTarget.value })
+            }
+          />
+          <button className="secondary-action" onClick={onCreateMemory} type="button">
+            <Save size={16} />
+            Add Memory
+          </button>
+        </div>
+        <div className="memory-list">
+          {memories.length === 0 ? <span>No saved memory yet</span> : null}
+          {memories.map((memory) => (
+            <label className="memory-row" key={memory.id}>
+              <input
+                checked={selectedMemoryIds.includes(memory.id)}
+                onChange={() => onToggleMemory(memory.id)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{memory.title}</strong>
+                <small>{memory.category}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+      </details>
+
+      <details className="capability-panel">
+        <summary>
+          <span>
+            <ClipboardCheck size={16} />
+            Human Plan Review
+          </span>
+          <ChevronDown size={16} />
+        </summary>
+        <button className="secondary-action" onClick={onPreviewPlan} type="button">
+          {planState === "running" ? <Loader2 className="spin" size={16} /> : <ClipboardCheck size={16} />}
+          Preview Plan
+        </button>
+        {planDraft ? (
+          <div className="plan-review">
+            {planDraft.map((item) => (
+              <article className="plan-edit-row" key={item.worker_id}>
+                <label className="toggle-row">
+                  <input
+                    checked={item.enabled}
+                    onChange={(event) =>
+                      onPlanChange(item.worker_id, "enabled", event.currentTarget.checked)
+                    }
+                    type="checkbox"
+                  />
+                  <strong>{item.worker_id}</strong>
+                </label>
+                <textarea
+                  value={item.objective}
+                  onChange={(event) =>
+                    onPlanChange(item.worker_id, "objective", event.currentTarget.value)
+                  }
+                />
+                <textarea
+                  value={item.expected_output}
+                  onChange={(event) =>
+                    onPlanChange(item.worker_id, "expected_output", event.currentTarget.value)
+                  }
+                />
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-copy">Generate a supervisor plan, edit worker tasks, then run.</p>
+        )}
+      </details>
+    </div>
   );
 }
 
@@ -530,7 +1055,21 @@ function formatLogTime(value: string) {
   }).format(new Date(value));
 }
 
-function RunSummary({ run }: { run: WorkflowRun | null }) {
+function RunSummary({
+  evaluations,
+  run,
+  toolCalls,
+  onEvaluate,
+  onRerunSynthesis,
+  onRerunWorker
+}: {
+  evaluations: EvaluationResult[];
+  run: WorkflowRun | null;
+  toolCalls: ToolCall[];
+  onEvaluate: () => void;
+  onRerunSynthesis: () => void;
+  onRerunWorker: (workerId: string) => void;
+}) {
   if (!run) {
     return null;
   }
@@ -538,6 +1077,55 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
   return (
     <div className="run-summary">
       <div className="model-pill">{run.model}</div>
+      <div className="inspector-grid" aria-label="Run inspector">
+        <span>
+          <Gauge size={15} />
+          {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : "n/a"}
+        </span>
+        <span>{run.estimated_tokens || 0} est. tokens</span>
+        <span>${run.estimated_cost_usd.toFixed(6)}</span>
+        <span>{run.output_format}</span>
+      </div>
+      <div className="inspector-actions">
+        <button onClick={onEvaluate} type="button">
+          <Gauge size={15} />
+          Score
+        </button>
+        <button onClick={onRerunSynthesis} type="button">
+          <RotateCcw size={15} />
+          Rerun Final
+        </button>
+      </div>
+      {evaluations.length > 0 ? (
+        <div className="evaluation-list">
+          {evaluations.map((evaluation) => (
+            <article key={evaluation.id}>
+              <strong>{evaluation.overall}/100</strong>
+              <span>
+                complete {evaluation.completeness} · action {evaluation.actionability} · risk{" "}
+                {evaluation.hallucination_risk}
+              </span>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      {toolCalls.length > 0 ? (
+        <details className="plan-output">
+          <summary>
+            <span>Tool Calls</span>
+            <span className="summary-meta">
+              <small>{toolCalls.length} events</small>
+              <ChevronDown size={16} />
+            </span>
+          </summary>
+          {toolCalls.map((toolCall) => (
+            <div className="result-row" key={toolCall.id}>
+              <strong>{toolCall.tool_name}</strong>
+              <span>{toolCall.output}</span>
+            </div>
+          ))}
+        </details>
+      ) : null}
       <details className="plan-output">
         <summary>
           <span>Plan</span>
@@ -558,7 +1146,19 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
         <details className="worker-output" key={result.worker_id}>
           <summary>
             <span>{result.worker_name}</span>
-            <ChevronDown size={16} />
+            <span className="summary-meta">
+              <button
+                className="inline-action"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onRerunWorker(result.worker_id);
+                }}
+                type="button"
+              >
+                <RotateCcw size={14} />
+              </button>
+              <ChevronDown size={16} />
+            </span>
           </summary>
           <MarkdownContent content={result.output} initialLineLimit={80} />
         </details>

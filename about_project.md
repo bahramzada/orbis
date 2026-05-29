@@ -8,7 +8,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 - Backend and frontend are separate applications.
 - Backend owns configuration, OpenRouter API access, agent orchestration, and API contracts.
-- Backend exposes `/health`, `/api/agents`, `/api/runs`, and `/api/runs/stream`.
+- Backend exposes `/health`, `/api/agents`, `/api/runs`, `/api/runs/stream`, plan preview, agent profile, memory, template, rerun, and evaluation endpoints.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
 - Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
 - Backend prompt templates are centralized in `backend/app/prompts.py` with strict planning, role-specific worker instructions, and compact final synthesis rules.
@@ -16,6 +16,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
 - Database schema management supports Alembic migrations for production deployments.
+- AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.
 - Frontend owns agent management UI with two views:
   - Simple visual management
   - Habbo-style office management
@@ -28,7 +29,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, logged agent orchestration, API schemas
+- `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, prompt builders, logged agent orchestration, capability endpoints, API schemas
 - `backend/migrations`: Alembic migrations for workflow persistence tables and indexes
 - `backend/tests`: backend test coverage
 - `frontend/src`: React application, API client, types, and styling

@@ -49,13 +49,15 @@ class OpenRouterClient:
         *,
         temperature: float = 0.3,
         max_tokens: int = 1200,
+        model: str | None = None,
         timeout_seconds: float | None = None,
         step: str = "chat",
     ) -> str:
         if not self.is_configured:
             raise RuntimeError("OPENROUTER_API_KEY is not configured.")
 
-        cache_key = self._cache_key(messages, temperature, max_tokens)
+        selected_model = model or self.model
+        cache_key = self._cache_key(messages, temperature, max_tokens, selected_model)
         cached = self._get_cached(cache_key)
         if cached is not None:
             metrics.increment("orbis_llm_cache_hits_total", {"step": step})
@@ -63,7 +65,7 @@ class OpenRouterClient:
 
         attempts = max(1, self._settings.openrouter_retry_attempts)
         request_body = {
-            "model": self.model,
+            "model": selected_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -143,9 +145,10 @@ class OpenRouterClient:
         messages: list[dict[str, str]],
         temperature: float,
         max_tokens: int,
+        model: str,
     ) -> str:
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,

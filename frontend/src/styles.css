@@ -51,6 +51,8 @@ body {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -60,10 +62,29 @@ button {
 }
 
 button:focus-visible,
+input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible {
   outline: 3px solid rgba(22, 117, 107, 0.18);
   outline-offset: 2px;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0 10px;
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+  accent-color: var(--color-primary);
 }
 
 .app-shell {
@@ -592,6 +613,215 @@ h3 {
   content: "";
 }
 
+.capability-stack {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.capability-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.capability-panel[open] {
+  border-color: rgba(22, 117, 107, 0.36);
+  box-shadow: 0 0 0 3px rgba(22, 117, 107, 0.05);
+}
+
+.capability-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: 0.88rem;
+  font-weight: 850;
+  padding: 0 var(--space-3);
+}
+
+.capability-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.capability-panel summary::marker {
+  content: "";
+}
+
+.capability-panel summary > span,
+.secondary-action,
+.inspector-grid span,
+.inspector-actions,
+.inspector-actions button,
+.inline-action,
+.toggle-row,
+.memory-row {
+  display: flex;
+}
+
+.capability-panel summary > span {
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.capability-panel summary > svg {
+  color: var(--color-muted);
+  transition: transform 160ms ease;
+}
+
+.capability-panel[open] summary > svg {
+  transform: rotate(180deg);
+}
+
+.template-grid,
+.profile-grid,
+.memory-form,
+.memory-list,
+.plan-review,
+.evaluation-list {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.template-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.template-grid button {
+  min-height: 72px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-soft);
+  color: var(--color-text);
+  padding: var(--space-2);
+  text-align: left;
+}
+
+.template-grid button:hover,
+.inspector-actions button:hover,
+.inline-action:hover {
+  border-color: rgba(22, 117, 107, 0.42);
+  background: var(--color-primary-soft);
+}
+
+.template-grid strong,
+.template-grid small,
+.memory-row strong,
+.memory-row small {
+  display: block;
+}
+
+.template-grid strong {
+  font-size: 0.82rem;
+}
+
+.template-grid small,
+.memory-row small,
+.muted-copy {
+  color: var(--color-muted);
+  font-size: 0.74rem;
+}
+
+.compact-field {
+  display: grid;
+  gap: 6px;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.compact-field > span {
+  color: var(--color-muted-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.toggle-row,
+.memory-row {
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toggle-row {
+  color: var(--color-muted-strong);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.profile-card,
+.plan-edit-row,
+.evaluation-list article {
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-surface-soft);
+}
+
+.profile-card,
+.plan-edit-row {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.profile-card .toggle-row,
+.plan-edit-row .toggle-row {
+  padding: 0;
+}
+
+.profile-card textarea,
+.memory-form textarea,
+.plan-edit-row textarea {
+  min-height: 70px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.profile-card textarea[aria-label$="system prompt"] {
+  min-height: 82px;
+}
+
+.profile-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 72px 92px;
+  gap: var(--space-2);
+}
+
+.secondary-action {
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 38px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-soft);
+  color: var(--color-primary-dark);
+  font-size: 0.82rem;
+  font-weight: 850;
+  margin: 0 var(--space-3) var(--space-3);
+  padding: 0 var(--space-3);
+}
+
+.memory-list {
+  max-height: 168px;
+  overflow: auto;
+}
+
+.memory-row {
+  min-height: 42px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.muted-copy {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
 .task-box {
   display: grid;
   gap: var(--space-2);
@@ -827,6 +1057,75 @@ textarea:focus {
   border-top: 1px solid var(--color-border-soft);
   margin-top: var(--space-5);
   padding-top: var(--space-3);
+}
+
+.inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.inspector-grid span {
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  background: var(--color-surface-soft);
+  color: var(--color-muted-strong);
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 0 8px;
+}
+
+.inspector-actions {
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.inspector-actions button,
+.inline-action {
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-primary-dark);
+  font-size: 0.76rem;
+  font-weight: 850;
+}
+
+.inspector-actions button {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+}
+
+.inline-action {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.evaluation-list {
+  padding: 0 0 var(--space-3);
+}
+
+.evaluation-list article {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+
+.evaluation-list strong {
+  color: var(--color-primary-dark);
+  font-size: 0.9rem;
+}
+
+.evaluation-list span {
+  color: var(--color-muted);
+  font-size: 0.76rem;
 }
 
 .model-pill {
@@ -1079,6 +1378,11 @@ textarea:focus {
     max-height: 560px;
   }
 
+  .template-grid,
+  .inspector-grid {
+    grid-template-columns: 1fr;
+  }
+
   .office-stage {
     padding-top: var(--space-3);
   }
@@ -1236,6 +1540,10 @@ textarea:focus {
 
   .office-progress {
     height: 7px;
+  }
+
+  .profile-controls {
+    grid-template-columns: 1fr;
   }
 
   .task-helper {

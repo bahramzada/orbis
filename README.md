@@ -58,7 +58,15 @@ alembic upgrade head
 ## API
 
 - `GET /api/agents`: agent graph
+- `GET/PUT /api/agent-profiles`: Agent Studio profile configuration
+- `GET /api/templates`: workflow template presets
+- `GET/POST /api/memories`: project memory list and creation
+- `POST /api/plans`: supervisor plan preview for human review
 - `GET /api/runs`: persisted workflow run history
+- `GET /api/runs/{run_id}`: full run inspector detail
 - `POST /api/runs`: complete workflow response
-- `POST /api/runs/stream`: newline-delimited live logs and final workflow response
+- `POST /api/runs/stream`: newline-delimited live logs, tool calls, and final workflow response
+- `POST /api/runs/{run_id}/rerun/worker/{worker_id}`: rerun one worker
+- `POST /api/runs/{run_id}/rerun/synthesis`: rerun final synthesis
+- `POST /api/evaluations/compare`: heuristic output evaluation scoring
 - `GET /metrics`: Prometheus-style process metrics

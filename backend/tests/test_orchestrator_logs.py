@@ -19,6 +19,7 @@ class FakeOpenRouterClient:
         *,
         temperature: float = 0.3,
         max_tokens: int = 1200,
+        model: str | None = None,
         timeout_seconds: float | None = None,
         step: str = "chat",
     ) -> str:
@@ -90,6 +91,7 @@ class PartiallyFailingOpenRouterClient(FakeOpenRouterClient):
         *,
         temperature: float = 0.3,
         max_tokens: int = 1200,
+        model: str | None = None,
         timeout_seconds: float | None = None,
         step: str = "chat",
     ) -> str:
@@ -99,6 +101,7 @@ class PartiallyFailingOpenRouterClient(FakeOpenRouterClient):
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            model=model,
             timeout_seconds=timeout_seconds,
             step=step,
         )

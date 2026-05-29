@@ -4,8 +4,10 @@ from typing import TypeAlias
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -13,15 +15,28 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    delete,
     insert,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.config import Settings
 from app.metrics import timer
-from app.schemas import WorkflowRun, WorkflowRunSummary
+from app.schemas import (
+    AgentProfile,
+    EvaluationResult,
+    MemoryCreateRequest,
+    MemoryItem,
+    RunDetail,
+    WorkerResult,
+    WorkflowLog,
+    WorkflowRun,
+    WorkflowRunSummary,
+    WorkflowTemplate,
+)
 
 SslConfig: TypeAlias = bool | ssl.SSLContext
 
@@ -38,6 +53,11 @@ workflow_runs = Table(
     Column("plan", JSONB, nullable=False),
     Column("worker_results", JSONB, nullable=False),
     Column("final_answer", Text, nullable=False),
+    Column("tool_calls", JSONB, nullable=False, default=list),
+    Column("output_format", String(32), nullable=False, default="markdown"),
+    Column("duration_ms", Integer, nullable=False, default=0),
+    Column("estimated_tokens", Integer, nullable=False, default=0),
+    Column("estimated_cost_usd", Float, nullable=False, default=0),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("completed_at", DateTime(timezone=True), nullable=False),
 )
@@ -70,6 +90,71 @@ Index(
     workflow_logs.c.run_id,
     workflow_logs.c.created_at.asc(),
 )
+
+agent_profiles = Table(
+    "agent_profiles",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("name", String(120), nullable=False),
+    Column("role", String(120), nullable=False),
+    Column("goal", Text, nullable=False),
+    Column("system_prompt", Text, nullable=False, default=""),
+    Column("model", Text, nullable=False, default=""),
+    Column("temperature", Float, nullable=False, default=0.3),
+    Column("max_tokens", Integer, nullable=False, default=900),
+    Column("enabled", Boolean, nullable=False, default=True),
+)
+
+workflow_templates = Table(
+    "workflow_templates",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("name", String(160), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("task_prompt", Text, nullable=False),
+    Column("output_format", String(32), nullable=False, default="markdown"),
+)
+
+memory_items = Table(
+    "memory_items",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("title", String(120), nullable=False),
+    Column("category", String(64), nullable=False),
+    Column("content", Text, nullable=False),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+tool_calls = Table(
+    "tool_calls",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("run_id", PostgresUUID(as_uuid=True), nullable=False),
+    Column("tool_name", String(80), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("input", Text, nullable=False),
+    Column("output", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+run_evaluations = Table(
+    "run_evaluations",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("run_id", PostgresUUID(as_uuid=True), nullable=False),
+    Column("rubric", Text, nullable=False),
+    Column("completeness", Integer, nullable=False),
+    Column("actionability", Integer, nullable=False),
+    Column("hallucination_risk", Integer, nullable=False),
+    Column("overall", Integer, nullable=False),
+    Column("notes", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+Index("ix_memory_items_enabled_created", memory_items.c.enabled, memory_items.c.created_at)
+Index("ix_tool_calls_run_id_created", tool_calls.c.run_id, tool_calls.c.created_at)
+Index("ix_run_evaluations_run_id_created", run_evaluations.c.run_id, run_evaluations.c.created_at)
 
 
 class DatabaseRepository:
@@ -128,10 +213,34 @@ class DatabaseRepository:
                             for result in run.worker_results
                         ],
                         final_answer=run.final_answer,
+                        tool_calls=[
+                            tool_call.model_dump(mode="json")
+                            for tool_call in run.tool_calls
+                        ],
+                        output_format=run.output_format,
+                        duration_ms=run.duration_ms,
+                        estimated_tokens=run.estimated_tokens,
+                        estimated_cost_usd=run.estimated_cost_usd,
                         created_at=created_at,
                         completed_at=completed_at,
                     )
                 )
+                if run.tool_calls:
+                    await connection.execute(
+                        insert(tool_calls),
+                        [
+                            {
+                                "id": tool_call.id,
+                                "run_id": UUID(tool_call.run_id),
+                                "tool_name": tool_call.tool_name,
+                                "status": tool_call.status,
+                                "input": tool_call.input,
+                                "output": tool_call.output,
+                                "created_at": _parse_datetime(tool_call.created_at),
+                            }
+                            for tool_call in run.tool_calls
+                        ],
+                    )
                 if run.logs:
                     await connection.execute(
                         insert(workflow_logs),
@@ -185,6 +294,168 @@ class DatabaseRepository:
             )
             for row in rows
         ]
+
+    async def get_workflow_run(self, run_id: str) -> RunDetail | None:
+        if self._engine is None:
+            return None
+
+        async with self._engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    select(workflow_runs).where(workflow_runs.c.run_id == UUID(run_id))
+                )
+            ).mappings().first()
+            if row is None:
+                return None
+            log_rows = (
+                await connection.execute(
+                    select(workflow_logs)
+                    .where(workflow_logs.c.run_id == UUID(run_id))
+                    .order_by(workflow_logs.c.created_at.asc())
+                )
+            ).mappings().all()
+            evaluation_rows = (
+                await connection.execute(
+                    select(run_evaluations)
+                    .where(run_evaluations.c.run_id == UUID(run_id))
+                    .order_by(run_evaluations.c.created_at.desc())
+                )
+            ).mappings().all()
+
+        return RunDetail(
+            run_id=str(row["run_id"]),
+            task=row["task"],
+            model=row["model"],
+            status=row["status"],
+            logs=[
+                WorkflowLog(
+                    run_id=str(log["run_id"]),
+                    created_at=log["created_at"].isoformat(),
+                    agent_id=log["agent_id"],
+                    agent_name=log["agent_name"],
+                    status=log["status"],
+                    message=log["message"],
+                )
+                for log in log_rows
+            ],
+            plan=row["plan"],
+            worker_results=row["worker_results"],
+            final_answer=row["final_answer"],
+            tool_calls=row["tool_calls"] or [],
+            output_format=row["output_format"] or "markdown",
+            duration_ms=row["duration_ms"] or 0,
+            estimated_tokens=row["estimated_tokens"] or 0,
+            estimated_cost_usd=row["estimated_cost_usd"] or 0,
+            evaluations=[
+                EvaluationResult(
+                    id=evaluation["id"],
+                    run_id=str(evaluation["run_id"]),
+                    rubric=evaluation["rubric"],
+                    completeness=evaluation["completeness"],
+                    actionability=evaluation["actionability"],
+                    hallucination_risk=evaluation["hallucination_risk"],
+                    overall=evaluation["overall"],
+                    notes=evaluation["notes"],
+                    created_at=evaluation["created_at"].isoformat(),
+                )
+                for evaluation in evaluation_rows
+            ],
+        )
+
+    async def update_run_outputs(
+        self,
+        run_id: str,
+        worker_results: list[WorkerResult],
+        final_answer: str,
+        output_format: str,
+    ) -> None:
+        if self._engine is None:
+            return
+
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                update(workflow_runs)
+                .where(workflow_runs.c.run_id == UUID(run_id))
+                .values(
+                    worker_results=[
+                        result.model_dump(mode="json") for result in worker_results
+                    ],
+                    final_answer=final_answer,
+                    output_format=output_format,
+                    completed_at=_now(),
+                )
+            )
+
+    async def list_agent_profiles(self) -> list[AgentProfile]:
+        if self._engine is None:
+            return []
+        async with self._engine.connect() as connection:
+            rows = (await connection.execute(select(agent_profiles))).mappings().all()
+        return [AgentProfile.model_validate(dict(row)) for row in rows]
+
+    async def save_agent_profiles(self, profiles: list[AgentProfile]) -> None:
+        if self._engine is None:
+            return
+        async with self._engine.begin() as connection:
+            await connection.execute(delete(agent_profiles))
+            if profiles:
+                await connection.execute(
+                    insert(agent_profiles),
+                    [profile.model_dump(mode="json") for profile in profiles],
+                )
+
+    async def list_memories(self) -> list[MemoryItem]:
+        if self._engine is None:
+            return []
+        async with self._engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    select(memory_items).order_by(memory_items.c.created_at.desc())
+                )
+            ).mappings().all()
+        return [
+            MemoryItem(
+                id=row["id"],
+                title=row["title"],
+                category=row["category"],
+                content=row["content"],
+                enabled=row["enabled"],
+                created_at=row["created_at"].isoformat(),
+            )
+            for row in rows
+        ]
+
+    async def create_memory(self, item_id: str, payload: MemoryCreateRequest) -> MemoryItem:
+        item = MemoryItem(
+            id=item_id,
+            title=payload.title,
+            category=payload.category,
+            content=payload.content,
+            enabled=payload.enabled,
+            created_at=_now().isoformat(),
+        )
+        if self._engine is not None:
+            values = item.model_dump(mode="json")
+            values["created_at"] = _parse_datetime(item.created_at)
+            async with self._engine.begin() as connection:
+                await connection.execute(insert(memory_items).values(**values))
+        return item
+
+    async def list_templates(self) -> list[WorkflowTemplate]:
+        if self._engine is None:
+            return []
+        async with self._engine.connect() as connection:
+            rows = (await connection.execute(select(workflow_templates))).mappings().all()
+        return [WorkflowTemplate.model_validate(dict(row)) for row in rows]
+
+    async def save_evaluation(self, evaluation: EvaluationResult) -> None:
+        if self._engine is None:
+            return
+        values = evaluation.model_dump(mode="json")
+        values["run_id"] = UUID(evaluation.run_id)
+        values["created_at"] = _parse_datetime(evaluation.created_at)
+        async with self._engine.begin() as connection:
+            await connection.execute(insert(run_evaluations).values(**values))
 
 
 def _now() -> datetime:
