@@ -252,6 +252,10 @@ h3 {
     box-shadow 160ms ease;
 }
 
+.agent-badge > div:last-child {
+  min-width: 0;
+}
+
 .agent-badge:hover {
   border-color: rgba(22, 117, 107, 0.45);
   box-shadow: 0 16px 34px rgba(22, 117, 107, 0.14);
@@ -293,6 +297,7 @@ h3 {
 .agent-badge strong {
   font-size: 0.92rem;
   line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .agent-badge span,
@@ -765,7 +770,22 @@ textarea:focus {
   .topbar {
     align-items: stretch;
     flex-direction: column;
+    gap: var(--space-3);
     margin-bottom: var(--space-4);
+  }
+
+  h1 {
+    font-size: clamp(1.75rem, 5.2vw, 2.15rem);
+  }
+
+  .toolbar {
+    width: 100%;
+  }
+
+  .toolbar button {
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
   }
 
   .workspace {
@@ -784,8 +804,34 @@ textarea:focus {
   .graph-panel,
   .visual-canvas,
   .office-scene {
-    height: clamp(420px, 58vh, 520px);
-    min-height: 420px;
+    height: clamp(400px, 54vh, 520px);
+    min-height: 400px;
+  }
+
+  .agent-badge {
+    width: clamp(132px, 22vw, 156px);
+    min-height: 76px;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .agent-icon {
+    width: 36px;
+    height: 36px;
+    flex-basis: 36px;
+  }
+
+  .agent-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .agent-badge strong {
+    font-size: 0.86rem;
+  }
+
+  .agent-badge span {
+    font-size: 0.78rem;
   }
 
   .office-scene {
@@ -806,40 +852,37 @@ textarea:focus {
     font-size: 1.75rem;
   }
 
-  .toolbar {
-    width: 100%;
-  }
-
-  .toolbar button {
-    flex: 1;
-    justify-content: center;
-    min-width: 0;
-  }
-
   .agent-badge {
-    width: 118px;
-    min-height: 74px;
-    gap: var(--space-2);
+    width: clamp(122px, 33vw, 130px);
+    min-height: 72px;
+    gap: 7px;
     padding: 10px;
   }
 
   .agent-icon {
-    width: 32px;
-    height: 32px;
-    flex-basis: 32px;
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
   }
 
   .agent-icon svg {
-    width: 18px;
-    height: 18px;
+    width: 17px;
+    height: 17px;
   }
 
   .agent-badge strong {
-    font-size: 0.82rem;
+    font-size: 0.78rem;
   }
 
   .agent-badge span {
-    font-size: 0.74rem;
+    font-size: 0.7rem;
+  }
+
+  .graph-panel,
+  .visual-canvas,
+  .office-scene {
+    height: 420px;
+    min-height: 420px;
   }
 
   .office-floor {
@@ -856,5 +899,28 @@ textarea:focus {
     align-items: flex-start;
     flex-direction: column;
     gap: var(--space-1);
+  }
+}
+
+@media (max-width: 380px) {
+  .agent-badge {
+    width: 116px;
+    min-height: 68px;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .agent-icon {
+    width: 28px;
+    height: 28px;
+    flex-basis: 28px;
+  }
+
+  .agent-badge strong {
+    font-size: 0.74rem;
+  }
+
+  .agent-badge span {
+    font-size: 0.68rem;
   }
 }
