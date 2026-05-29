@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -31,6 +31,44 @@ const visualPositionOverrides: Record<string, Pick<AgentNode, "x" | "y">> = {
   strategist: { x: 32, y: 70 },
   builder: { x: 68, y: 70 },
   reviewer: { x: 76, y: 50 }
+};
+
+const workerOrder = ["researcher", "strategist", "builder", "reviewer"];
+
+const officeAgentMeta: Record<
+  string,
+  { slot: string; label: string; bubble: string; progress: number }
+> = {
+  supervisor: {
+    slot: "supervisor",
+    label: "Supervisor",
+    bubble: "Decompose",
+    progress: 88
+  },
+  researcher: {
+    slot: "researcher",
+    label: "Worker 1",
+    bubble: "Research",
+    progress: 72
+  },
+  strategist: {
+    slot: "strategist",
+    label: "Worker 2",
+    bubble: "Strategy",
+    progress: 64
+  },
+  builder: {
+    slot: "builder",
+    label: "Worker 3",
+    bubble: "Build",
+    progress: 69
+  },
+  reviewer: {
+    slot: "reviewer",
+    label: "Worker 4",
+    bubble: "Review",
+    progress: 76
+  }
 };
 
 function App() {
@@ -289,31 +327,108 @@ function OfficeGraph({
   supervisor: AgentNode | undefined;
   workers: AgentNode[];
 }) {
-  const agents = [supervisor, ...workers].filter(Boolean) as AgentNode[];
+  const orderedWorkers = [
+    ...workerOrder
+      .map((id) => workers.find((worker) => worker.id === id))
+      .filter(Boolean),
+    ...workers.filter((worker) => !workerOrder.includes(worker.id))
+  ] as AgentNode[];
+  const workerCount = orderedWorkers.length;
 
   return (
     <div className="office-scene">
-      <div className="office-floor">
-        {agents.map((agent, index) => (
-          <div
-            className={`office-agent ${agent.kind}`}
-            key={agent.id}
-            style={{
-              gridColumn: `${2 + (index % 3) * 2}`,
-              gridRow: `${2 + Math.floor(index / 3) * 2}`
-            }}
-            title={agent.goal}
-          >
-            <div className="desk" />
-            <div className="avatar">
-              <span />
+      <div className="office-titlebar">
+        <span>Agentic AI Office</span>
+        <strong>1 Supervisor, {workerCount} Workers: Hierarchical AI System</strong>
+      </div>
+      <div className="office-stage">
+        <div className="office-room">
+          <div className="office-wall">
+            <div className="office-board">
+              <span>Supervisor 01</span>
+              <b>Decompose &gt; Delegate &gt; Aggregate</b>
             </div>
-            <strong>{agent.name}</strong>
-            <small>{agent.role}</small>
+            <div className="office-cabinet cabinet-a" />
+            <div className="office-plant" />
           </div>
-        ))}
+
+          <div className="office-floor">
+            <svg
+              aria-hidden="true"
+              className="office-links"
+              preserveAspectRatio="none"
+              viewBox="0 0 100 100"
+            >
+              <path d="M50 45 L28 47" />
+              <path d="M50 48 L37 63" />
+              <path d="M50 48 L63 63" />
+              <path d="M50 45 L72 47" />
+            </svg>
+            <div className="office-prop prop-water" />
+            <div className="office-prop prop-files" />
+            <div className="office-prop prop-server" />
+            {supervisor ? <OfficeAgentStation agent={supervisor} /> : null}
+            {orderedWorkers.map((agent) => (
+              <OfficeAgentStation agent={agent} key={agent.id} />
+            ))}
+          </div>
+
+          <aside className="office-status-card" aria-label="System status">
+            <span>System Status</span>
+            <strong>Operational</strong>
+            <dl>
+              <div>
+                <dt>Active Task</dt>
+                <dd>Supervisor workflow</dd>
+              </div>
+              <div>
+                <dt>Tasks Assigned</dt>
+                <dd>{workerCount}</dd>
+              </div>
+              <div>
+                <dt>Progress</dt>
+                <dd>Ready</dd>
+              </div>
+            </dl>
+          </aside>
+        </div>
       </div>
     </div>
+  );
+}
+
+function OfficeAgentStation({ agent }: { agent: AgentNode }) {
+  const meta =
+    officeAgentMeta[agent.id] ??
+    ({
+      slot: "fallback",
+      label: agent.kind === "supervisor" ? "Supervisor" : "Worker",
+      bubble: agent.role,
+      progress: 58
+    } satisfies (typeof officeAgentMeta)[string]);
+  const style = { "--progress": `${meta.progress}%` } as CSSProperties;
+
+  return (
+    <article
+      className={`office-agent station-${meta.slot} ${agent.kind}`}
+      style={style}
+      title={agent.goal}
+    >
+      <div className="office-agent-label">{meta.label}</div>
+      <div className="office-bubble">{meta.bubble}</div>
+      <div className="office-desk">
+        <div className="office-monitor" />
+        <div className="office-keyboard" />
+      </div>
+      <div className="office-avatar">
+        <span />
+      </div>
+      <div className="office-agent-copy">
+        <strong>{agent.name}</strong>
+        <small>{agent.role}</small>
+      </div>
+      <div className="office-progress" />
+    </article>
   );
 }
 

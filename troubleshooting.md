@@ -69,3 +69,24 @@
 - **Error:** Backend startup failed with `socket.gaierror` while resolving the Supabase pooler host inside the default sandbox.
 - **Failed Attempts:** Started Uvicorn inside the default sandbox.
 - **Solution:** Restarted Uvicorn with approved network access, then verified `/health` and `/metrics`.
+
+## Office View Mobile Agent Overlap
+
+- **Context/Component:** Frontend Office view responsive layout
+- **Error:** At 390px viewport width, the isometric office agent stations touched vertically after the first redesign pass.
+- **Failed Attempts:** Initial mobile positions kept the lower worker row too close to the upper worker row.
+- **Solution:** Increased the mobile graph height, hid nonessential HUD/bubble elements under 620px, and moved the mobile supervisor, worker, and lower rows into a clearer stepped layout.
+
+## Office View Free-Floating Label Clutter
+
+- **Context/Component:** Frontend Office view, isometric agent layout
+- **Error:** Absolute-positioned labels and speech bubbles made the Office scene visually cluttered, with labels clipping or touching across desktop and mobile sizes.
+- **Failed Attempts:** Scaling the scene down and moving individual labels reduced some overlap but kept the layout fragile and hard to read.
+- **Solution:** Rebuilt each office agent as a compact self-contained pod where label, action chip, desk, identity card, and progress bar live inside one bounded station; then verified no overlap, text clipping, or horizontal overflow at 2048px wide and 390px mobile viewports.
+
+## Office View Pixel Scene Was Still Too Cluttered
+
+- **Context/Component:** Frontend Office view UX
+- **Error:** The pixel/isometric scene remained visually noisy and oversized for an operational dashboard, especially on mobile and wide desktop.
+- **Failed Attempts:** Compacting the pixel scene and shortening labels improved measurements but did not produce a clean enough product UI.
+- **Solution:** Rolled the Office view back toward the original simple management-board concept, using a light bounded floor grid and self-contained agent cards; verified 1280x720, 2048x1325, and 390x844 with zero agent overlap, zero text clipping, no horizontal overflow, and no console errors.
