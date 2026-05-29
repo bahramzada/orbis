@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -10,7 +10,8 @@ import {
   Loader2,
   Network,
   Play,
-  Users
+  Users,
+  XCircle
 } from "lucide-react";
 
 import { fallbackGraph, fetchAgents, runWorkflowStream } from "./api";
@@ -21,6 +22,8 @@ type RunState = "idle" | "running" | "success" | "error";
 
 const starterTask =
   "Design a customer support automation flow for a small SaaS team.";
+const logPreviewLimit = 80;
+const markdownInitialLineLimit = 140;
 
 const visualPositionOverrides: Record<string, Pick<AgentNode, "x" | "y">> = {
   supervisor: { x: 50, y: 16 },
@@ -38,6 +41,7 @@ function App() {
   const [logs, setLogs] = useState<WorkflowLog[]>([]);
   const [error, setError] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
+  const abortControllerRef = useRef<AbortController | null>(null);
   const isRunning = runState === "running";
 
   const supervisor = useMemo(
@@ -73,6 +77,9 @@ function App() {
   }
 
   async function handleRun() {
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setError("");
     setRun(null);
     setLogs([]);
@@ -80,14 +87,26 @@ function App() {
     try {
       const result = await runWorkflowStream(task, (log) => {
         setLogs((currentLogs) => [...currentLogs, log]);
-      });
+      }, controller.signal);
       setRun(result);
       setLogs(result.logs);
       setRunState("success");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Workflow failed.");
-      setRunState("error");
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        setRunState("idle");
+      } else {
+        setError(caught instanceof Error ? caught.message : "Workflow failed.");
+        setRunState("error");
+      }
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+      }
     }
+  }
+
+  function handleCancelRun() {
+    abortControllerRef.current?.abort();
   }
 
   const runButtonLabel =
@@ -169,15 +188,23 @@ function App() {
             </span>
           </label>
 
-          <button
-            className={`run-button ${runState}`}
-            disabled={isRunning || task.trim().length < 3}
-            onClick={handleRun}
-            type="button"
-          >
-            {runButtonIcon}
-            {runButtonLabel}
-          </button>
+          <div className="run-actions">
+            <button
+              className={`run-button ${runState}`}
+              disabled={isRunning || task.trim().length < 3}
+              onClick={handleRun}
+              type="button"
+            >
+              {runButtonIcon}
+              {runButtonLabel}
+            </button>
+            {isRunning ? (
+              <button className="cancel-button" onClick={handleCancelRun} type="button">
+                <XCircle size={18} />
+                Cancel
+              </button>
+            ) : null}
+          </div>
 
           {error ? <div className="error-box">{error}</div> : null}
           <ActivityLog logs={run?.logs.length ? run.logs : logs} isRunning={isRunning} />
@@ -297,6 +324,20 @@ function ActivityLog({
   logs: WorkflowLog[];
   isRunning: boolean;
 }) {
+  const [showAllLogs, setShowAllLogs] = useState(false);
+  const latestLogIndexByAgent = useMemo(() => {
+    const latest = new Map<string, number>();
+    logs.forEach((log, index) => {
+      latest.set(log.agent_id, index);
+    });
+    return latest;
+  }, [logs]);
+  const renderedLogs = useMemo(() => {
+    const reversed = logs.map((log, index) => ({ index, log })).reverse();
+    return showAllLogs ? reversed : reversed.slice(0, logPreviewLimit);
+  }, [logs, showAllLogs]);
+  const hiddenLogCount = Math.max(0, logs.length - renderedLogs.length);
+
   if (logs.length === 0) {
     return (
       <div className="empty-state">
@@ -306,21 +347,13 @@ function ActivityLog({
     );
   }
 
-  const latestLogIndexByAgent = new Map<string, number>();
-  logs.forEach((log, index) => {
-    latestLogIndexByAgent.set(log.agent_id, index);
-  });
-
   return (
     <div className="activity-log">
       <div className="activity-heading">
         <strong>Agent Logs</strong>
         <span>{isRunning ? "Running" : "Done"}</span>
       </div>
-      {logs
-        .map((log, index) => ({ index, log }))
-        .reverse()
-        .map(({ index, log }) => {
+      {renderedLogs.map(({ index, log }) => {
           const isActiveLog =
             isRunning &&
             log.status === "running" &&
@@ -342,6 +375,15 @@ function ActivityLog({
             </div>
           );
         })}
+      {hiddenLogCount > 0 ? (
+        <button
+          className="show-more-button"
+          onClick={() => setShowAllLogs(true)}
+          type="button"
+        >
+          Show {hiddenLogCount} older logs
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -403,21 +445,40 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
             <span>{result.worker_name}</span>
             <ChevronDown size={16} />
           </summary>
-          <MarkdownContent content={result.output} />
+          <MarkdownContent content={result.output} initialLineLimit={80} />
         </details>
       ))}
       <h3>Final</h3>
       <section className="final-output">
-        <MarkdownContent content={run.final_answer} />
+        <MarkdownContent
+          content={run.final_answer}
+          initialLineLimit={markdownInitialLineLimit}
+        />
       </section>
     </div>
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function MarkdownContent({
+  content,
+  initialLineLimit = 0
+}: {
+  content: string;
+  initialLineLimit?: number;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const lines = useMemo(() => content.split("\n"), [content]);
+  const visibleLines =
+    initialLineLimit > 0 && !isExpanded ? lines.slice(0, initialLineLimit) : lines;
+  const hiddenLineCount = Math.max(0, lines.length - visibleLines.length);
+
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [content]);
+
   return (
     <div className="markdown-content">
-      {content.split("\n").map((line, index) => {
+      {visibleLines.map((line, index) => {
         const trimmed = line.trim();
         if (!trimmed) {
           return null;
@@ -457,6 +518,15 @@ function MarkdownContent({ content }: { content: string }) {
         }
         return <p key={`${index}-${trimmed}`}>{renderInlineMarkdown(trimmed)}</p>;
       })}
+      {hiddenLineCount > 0 ? (
+        <button
+          className="show-more-button"
+          onClick={() => setIsExpanded(true)}
+          type="button"
+        >
+          Show {hiddenLineCount} more lines
+        </button>
+      ) : null}
     </div>
   );
 }

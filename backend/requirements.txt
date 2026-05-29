@@ -5,6 +5,7 @@ pydantic-settings>=2.7.0
 SQLAlchemy>=2.0.36
 asyncpg>=0.30.0
 greenlet>=3.1.1
+alembic>=1.14.0
 uvicorn[standard]>=0.34.0
 pytest>=8.3.0
 ruff>=0.8.0

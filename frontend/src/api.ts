@@ -90,14 +90,16 @@ type WorkflowStreamEvent =
 
 export async function runWorkflowStream(
   task: string,
-  onLog: (log: WorkflowLog) => void
+  onLog: (log: WorkflowLog) => void,
+  signal?: AbortSignal
 ): Promise<WorkflowRun> {
   const response = await fetch(`${apiBaseUrl}/api/runs/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ task })
+    body: JSON.stringify({ task }),
+    signal
   });
 
   if (!response.ok) {

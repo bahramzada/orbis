@@ -28,12 +28,54 @@ class Settings(BaseSettings):
         alias="FRONTEND_ORIGINS",
     )
     request_timeout_seconds: float = Field(default=45.0, alias="REQUEST_TIMEOUT_SECONDS")
+    workflow_max_concurrency: int = Field(default=2, alias="WORKFLOW_MAX_CONCURRENCY")
+    workflow_step_timeout_seconds: float = Field(
+        default=90.0,
+        alias="WORKFLOW_STEP_TIMEOUT_SECONDS",
+    )
+    workflow_cache_ttl_seconds: float = Field(
+        default=0.0,
+        alias="WORKFLOW_CACHE_TTL_SECONDS",
+    )
+    openrouter_max_connections: int = Field(
+        default=20,
+        alias="OPENROUTER_MAX_CONNECTIONS",
+    )
+    openrouter_max_keepalive: int = Field(
+        default=10,
+        alias="OPENROUTER_MAX_KEEPALIVE",
+    )
+    openrouter_retry_attempts: int = Field(
+        default=3,
+        alias="OPENROUTER_RETRY_ATTEMPTS",
+    )
+    openrouter_retry_base_seconds: float = Field(
+        default=0.4,
+        alias="OPENROUTER_RETRY_BASE_SECONDS",
+    )
     database_url: str = Field(default="", alias="DATABASE_URL")
     database_connect_timeout_seconds: float = Field(
         default=10.0,
         alias="DATABASE_CONNECT_TIMEOUT_SECONDS",
     )
     database_ssl: str = Field(default="require", alias="DATABASE_SSL")
+    database_pool_size: int = Field(default=3, alias="DATABASE_POOL_SIZE")
+    database_max_overflow: int = Field(default=2, alias="DATABASE_MAX_OVERFLOW")
+    database_pool_timeout_seconds: float = Field(
+        default=10.0,
+        alias="DATABASE_POOL_TIMEOUT_SECONDS",
+    )
+    database_auto_create_tables: bool = Field(
+        default=True,
+        alias="DATABASE_AUTO_CREATE_TABLES",
+    )
+    enable_metrics: bool = Field(default=True, alias="ENABLE_METRICS")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    otel_exporter_otlp_endpoint: str = Field(
+        default="",
+        alias="OTEL_EXPORTER_OTLP_ENDPOINT",
+    )
+    sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),

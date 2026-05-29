@@ -2,8 +2,11 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from time import perf_counter
 from uuid import uuid4
 
+from app.config import Settings, get_settings
+from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
 from app.prompts import (
     build_supervisor_plan_system_prompt,
@@ -97,9 +100,18 @@ class AgentRegistry:
 
 
 class AgentOrchestrator:
-    def __init__(self, client: OpenRouterClient, registry: AgentRegistry) -> None:
+    def __init__(
+        self,
+        client: OpenRouterClient,
+        registry: AgentRegistry,
+        settings: Settings | None = None,
+    ) -> None:
         self._client = client
         self._registry = registry
+        self._settings = settings or get_settings()
+        self._semaphore = asyncio.Semaphore(
+            max(1, self._settings.workflow_max_concurrency)
+        )
 
     async def run(
         self,
@@ -108,6 +120,7 @@ class AgentOrchestrator:
     ) -> WorkflowRun:
         run_id = str(uuid4())
         logs: list[WorkflowLog] = []
+        started_at = perf_counter()
 
         async def emit(
             agent: AgentNode,
@@ -126,35 +139,66 @@ class AgentOrchestrator:
             if log_callback is not None:
                 await log_callback(log)
 
-        await emit(SUPERVISOR, "running", "Creating delegation plan.")
-        plan = await self._create_plan(task)
-        await emit(SUPERVISOR, "completed", f"Delegated work to {len(plan)} agents.")
+        status = "completed"
+        if self._semaphore.locked():
+            await emit(SUPERVISOR, "queued", "Waiting for an available workflow slot.")
 
-        worker_results = await asyncio.gather(
-            *(self._run_worker(task, item, emit) for item in plan)
-        )
-        await emit(SUPERVISOR, "running", "Synthesizing worker outputs.")
-        final_answer = await self._synthesize(task, worker_results)
-        await emit(SUPERVISOR, "completed", "Final answer is ready.")
+        async with self._semaphore:
+            try:
+                await emit(SUPERVISOR, "running", "Creating delegation plan.")
+                plan = await self._create_plan(task)
+                await emit(
+                    SUPERVISOR,
+                    "completed",
+                    f"Delegated work to {len(plan)} agents.",
+                )
 
-        return WorkflowRun(
-            run_id=run_id,
-            task=task,
-            model=self._client.model,
-            logs=logs,
-            plan=plan,
-            worker_results=list(worker_results),
-            final_answer=final_answer,
-        )
+                worker_results = await asyncio.gather(
+                    *(self._run_worker(task, item, emit) for item in plan)
+                )
+                await emit(SUPERVISOR, "running", "Synthesizing worker outputs.")
+                final_answer = await self._synthesize(task, list(worker_results))
+                await emit(SUPERVISOR, "completed", "Final answer is ready.")
+
+                return WorkflowRun(
+                    run_id=run_id,
+                    task=task,
+                    model=self._client.model,
+                    status="completed",
+                    logs=logs,
+                    plan=plan,
+                    worker_results=list(worker_results),
+                    final_answer=final_answer,
+                )
+            except asyncio.CancelledError:
+                status = "cancelled"
+                await emit(SUPERVISOR, "cancelled", "Workflow was cancelled.")
+                raise
+            except Exception as exc:
+                status = "failed"
+                await emit(SUPERVISOR, "failed", f"Workflow failed: {_safe_error(exc)}")
+                raise
+            finally:
+                metrics.observe(
+                    "orbis_workflow_duration_seconds",
+                    perf_counter() - started_at,
+                    {"status": status},
+                )
+                metrics.increment("orbis_workflows_total", {"status": status})
 
     async def _create_plan(self, task: str) -> list[DelegationItem]:
-        content = await self._client.chat(
-            [
-                {"role": "system", "content": build_supervisor_plan_system_prompt()},
-                {"role": "user", "content": task},
-            ],
-            temperature=0.2,
-            max_tokens=900,
+        content = await asyncio.wait_for(
+            self._client.chat(
+                [
+                    {"role": "system", "content": build_supervisor_plan_system_prompt()},
+                    {"role": "user", "content": task},
+                ],
+                temperature=0.2,
+                max_tokens=800,
+                timeout_seconds=self._settings.workflow_step_timeout_seconds,
+                step="plan",
+            ),
+            timeout=self._settings.workflow_step_timeout_seconds,
         )
         parsed = self._parse_json_array(content)
         items = [DelegationItem.model_validate(item) for item in parsed]
@@ -168,30 +212,43 @@ class AgentOrchestrator:
     ) -> WorkerResult:
         worker = self._registry.worker_by_id(item.worker_id)
         await emit(worker, "running", item.objective)
-        content = await self._client.chat(
-            [
-                {
-                    "role": "system",
-                    "content": build_worker_system_prompt(
-                        worker_id=worker.id,
-                        worker_name=worker.name,
-                        worker_role=worker.role,
-                        worker_goal=worker.goal,
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": build_worker_user_prompt(
-                        main_task=task,
-                        objective=item.objective,
-                        expected_output=item.expected_output,
-                    ),
-                },
-            ],
-            temperature=0.35,
-            max_tokens=1200,
-        )
-        await emit(worker, "completed", "Output returned to supervisor.")
+        try:
+            content = await asyncio.wait_for(
+                self._client.chat(
+                    [
+                        {
+                            "role": "system",
+                            "content": build_worker_system_prompt(
+                                worker_id=worker.id,
+                                worker_name=worker.name,
+                                worker_role=worker.role,
+                                worker_goal=worker.goal,
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": build_worker_user_prompt(
+                                main_task=task,
+                                objective=item.objective,
+                                expected_output=item.expected_output,
+                            ),
+                        },
+                    ],
+                    temperature=0.3,
+                    max_tokens=900,
+                    timeout_seconds=self._settings.workflow_step_timeout_seconds,
+                    step=f"worker_{worker.id}",
+                ),
+                timeout=self._settings.workflow_step_timeout_seconds,
+            )
+            await emit(worker, "completed", "Output returned to supervisor.")
+        except Exception as exc:
+            content = (
+                f"{worker.name} failed to complete this step. "
+                f"Reason: {_safe_error(exc)}"
+            )
+            await emit(worker, "failed", content)
+            metrics.increment("orbis_worker_failures_total", {"worker_id": worker.id})
         return WorkerResult(
             worker_id=worker.id,
             worker_name=worker.name,
@@ -208,22 +265,27 @@ class AgentOrchestrator:
             f"{result.worker_name} ({result.objective}):\n{result.output}"
             for result in worker_results
         )
-        return await self._client.chat(
-            [
-                {
-                    "role": "system",
-                    "content": build_synthesis_system_prompt(),
-                },
-                {
-                    "role": "user",
-                    "content": build_synthesis_user_prompt(
-                        task=task,
-                        worker_payload=worker_payload,
-                    ),
-                },
-            ],
-            temperature=0.25,
-            max_tokens=1600,
+        return await asyncio.wait_for(
+            self._client.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": build_synthesis_system_prompt(),
+                    },
+                    {
+                        "role": "user",
+                        "content": build_synthesis_user_prompt(
+                            task=task,
+                            worker_payload=worker_payload,
+                        ),
+                    },
+                ],
+                temperature=0.2,
+                max_tokens=1200,
+                timeout_seconds=self._settings.workflow_step_timeout_seconds,
+                step="synthesis",
+            ),
+            timeout=self._settings.workflow_step_timeout_seconds,
         )
 
     @staticmethod
@@ -258,3 +320,8 @@ class AgentOrchestrator:
             normalized.append(item)
 
         return normalized
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc) or exc.__class__.__name__
+    return message.replace("\n", " ")[:240]

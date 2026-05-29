@@ -55,3 +55,17 @@
 - **Error:** Historical `running` log entries kept rendering with the animated spinner after the workflow had already produced results.
 - **Failed Attempts:** Treating each log entry status as a permanent visual state made old start events look like active work.
 - **Solution:** Track the latest log index per agent and animate only the latest `running` entry while the workflow is actively running; older `running` entries render as settled activity events.
+
+## Alembic Script Location From Repository Root
+
+- **Context/Component:** Backend migrations, Alembic
+- **Error:** `alembic -c backend/alembic.ini heads` could not find the migration script directory when run from the repository root.
+- **Failed Attempts:** Used a relative `script_location = migrations`, which resolved against the current shell directory.
+- **Solution:** Set `script_location = %(here)s/migrations` and `prepend_sys_path = %(here)s` so Alembic resolves paths relative to `backend/alembic.ini`.
+
+## Backend Startup Requires Network Access For Supabase
+
+- **Context/Component:** FastAPI startup, Supabase Postgres pooler
+- **Error:** Backend startup failed with `socket.gaierror` while resolving the Supabase pooler host inside the default sandbox.
+- **Failed Attempts:** Started Uvicorn inside the default sandbox.
+- **Solution:** Restarted Uvicorn with approved network access, then verified `/health` and `/metrics`.

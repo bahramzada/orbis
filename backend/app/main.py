@@ -1,16 +1,20 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import asyncio
+from collections.abc import Awaitable, Callable
 import json
+import logging
+from time import perf_counter
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from httpx import HTTPError
 
 from app.agents import AgentOrchestrator, AgentRegistry
 from app.config import get_settings
 from app.db import DatabaseRepository
+from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
 from app.schemas import (
     AgentGraphResponse,
@@ -28,12 +32,13 @@ registry = AgentRegistry()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    logging.basicConfig(level=settings.log_level.upper())
     client = OpenRouterClient(settings)
     database = DatabaseRepository(settings)
     await database.init()
     app.state.openrouter_client = client
     app.state.database = database
-    app.state.orchestrator = AgentOrchestrator(client, registry)
+    app.state.orchestrator = AgentOrchestrator(client, registry, settings)
     yield
     await client.close()
     await database.close()
@@ -49,6 +54,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def record_request_metrics(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    started_at = perf_counter()
+    status_code = "500"
+    try:
+        response = await call_next(request)
+        status_code = str(response.status_code)
+        return response
+    finally:
+        elapsed = perf_counter() - started_at
+        route = request.url.path
+        labels = {
+            "method": request.method,
+            "path": route,
+            "status": status_code,
+        }
+        metrics.increment("orbis_http_requests_total", labels)
+        metrics.observe("orbis_http_request_duration_seconds", elapsed, labels)
 
 
 def get_orchestrator() -> AgentOrchestrator:
@@ -74,6 +102,13 @@ async def health(
         database_configured=database.is_configured,
         model=client.model,
     )
+
+
+@app.get("/metrics")
+async def get_metrics() -> PlainTextResponse:
+    if not settings.enable_metrics:
+        raise HTTPException(status_code=404, detail="Metrics are disabled.")
+    return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain")
 
 
 @app.get("/api/agents", response_model=AgentGraphResponse)
@@ -158,6 +193,8 @@ async def stream_workflow(
         finally:
             if not run_task.done():
                 run_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await run_task
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 

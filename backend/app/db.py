@@ -7,6 +7,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -19,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.config import Settings
+from app.metrics import timer
 from app.schemas import WorkflowRun, WorkflowRunSummary
 
 SslConfig: TypeAlias = bool | ssl.SSLContext
@@ -57,14 +59,30 @@ workflow_logs = Table(
     Column("message", Text, nullable=False),
 )
 
+Index("ix_workflow_runs_completed_at_desc", workflow_runs.c.completed_at.desc())
+Index(
+    "ix_workflow_runs_status_completed_at_desc",
+    workflow_runs.c.status,
+    workflow_runs.c.completed_at.desc(),
+)
+Index(
+    "ix_workflow_logs_run_id_created_at",
+    workflow_logs.c.run_id,
+    workflow_logs.c.created_at.asc(),
+)
+
 
 class DatabaseRepository:
     def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._engine: AsyncEngine | None = None
         if settings.is_database_configured:
             self._engine = create_async_engine(
                 settings.sqlalchemy_database_url,
                 pool_pre_ping=True,
+                pool_size=settings.database_pool_size,
+                max_overflow=settings.database_max_overflow,
+                pool_timeout=settings.database_pool_timeout_seconds,
                 connect_args={
                     "timeout": settings.database_connect_timeout_seconds,
                     "ssl": _ssl_config(settings.database_ssl),
@@ -78,6 +96,8 @@ class DatabaseRepository:
     async def init(self) -> None:
         if self._engine is None:
             return
+        if not self._settings.database_auto_create_tables:
+            return
 
         async with self._engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
@@ -90,60 +110,69 @@ class DatabaseRepository:
         if self._engine is None:
             return
 
-        created_at = _parse_datetime(run.logs[0].created_at) if run.logs else _now()
-        completed_at = _parse_datetime(run.logs[-1].created_at) if run.logs else _now()
+        db_timer = timer("orbis_db_operation_duration_seconds", {"operation": "save_run"})
+        try:
+            created_at = _parse_datetime(run.logs[0].created_at) if run.logs else _now()
+            completed_at = _parse_datetime(run.logs[-1].created_at) if run.logs else _now()
 
-        async with self._engine.begin() as connection:
-            await connection.execute(
-                insert(workflow_runs).values(
-                    run_id=UUID(run.run_id),
-                    task=run.task,
-                    model=run.model,
-                    status="completed",
-                    plan=[item.model_dump(mode="json") for item in run.plan],
-                    worker_results=[
-                        result.model_dump(mode="json") for result in run.worker_results
-                    ],
-                    final_answer=run.final_answer,
-                    created_at=created_at,
-                    completed_at=completed_at,
-                )
-            )
-            if run.logs:
+            async with self._engine.begin() as connection:
                 await connection.execute(
-                    insert(workflow_logs),
-                    [
-                        {
-                            "run_id": UUID(log.run_id),
-                            "created_at": _parse_datetime(log.created_at),
-                            "agent_id": log.agent_id,
-                            "agent_name": log.agent_name,
-                            "status": log.status,
-                            "message": log.message,
-                        }
-                        for log in run.logs
-                    ],
+                    insert(workflow_runs).values(
+                        run_id=UUID(run.run_id),
+                        task=run.task,
+                        model=run.model,
+                        status=run.status,
+                        plan=[item.model_dump(mode="json") for item in run.plan],
+                        worker_results=[
+                            result.model_dump(mode="json")
+                            for result in run.worker_results
+                        ],
+                        final_answer=run.final_answer,
+                        created_at=created_at,
+                        completed_at=completed_at,
+                    )
                 )
+                if run.logs:
+                    await connection.execute(
+                        insert(workflow_logs),
+                        [
+                            {
+                                "run_id": UUID(log.run_id),
+                                "created_at": _parse_datetime(log.created_at),
+                                "agent_id": log.agent_id,
+                                "agent_name": log.agent_name,
+                                "status": log.status,
+                                "message": log.message,
+                            }
+                            for log in run.logs
+                        ],
+                    )
+        finally:
+            db_timer.stop()
 
     async def list_workflow_runs(self, limit: int = 20) -> list[WorkflowRunSummary]:
         if self._engine is None:
             return []
 
-        statement = (
-            select(
-                workflow_runs.c.run_id,
-                workflow_runs.c.task,
-                workflow_runs.c.model,
-                workflow_runs.c.status,
-                workflow_runs.c.created_at,
-                workflow_runs.c.completed_at,
+        db_timer = timer("orbis_db_operation_duration_seconds", {"operation": "list_runs"})
+        try:
+            statement = (
+                select(
+                    workflow_runs.c.run_id,
+                    workflow_runs.c.task,
+                    workflow_runs.c.model,
+                    workflow_runs.c.status,
+                    workflow_runs.c.created_at,
+                    workflow_runs.c.completed_at,
+                )
+                .order_by(workflow_runs.c.completed_at.desc())
+                .limit(limit)
             )
-            .order_by(workflow_runs.c.completed_at.desc())
-            .limit(limit)
-        )
 
-        async with self._engine.connect() as connection:
-            rows = (await connection.execute(statement)).mappings().all()
+            async with self._engine.connect() as connection:
+                rows = (await connection.execute(statement)).mappings().all()
+        finally:
+            db_timer.stop()
 
         return [
             WorkflowRunSummary(

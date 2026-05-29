@@ -34,7 +34,18 @@ export type WorkerResult = {
   output: string;
 };
 
-export type WorkflowLogStatus = "running" | "completed" | "failed";
+export type WorkflowLogStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type WorkflowRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export type WorkflowLog = {
   run_id: string;
@@ -49,6 +60,7 @@ export type WorkflowRun = {
   run_id: string;
   task: string;
   model: string;
+  status: WorkflowRunStatus;
   logs: WorkflowLog[];
   plan: DelegationItem[];
   worker_results: WorkerResult[];
