@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   Building2,
   BrainCircuit,
   CheckCircle2,
@@ -10,8 +11,8 @@ import {
   Users
 } from "lucide-react";
 
-import { fallbackGraph, fetchAgents, runWorkflow } from "./api";
-import type { AgentGraph, AgentNode, WorkflowRun } from "./types";
+import { fallbackGraph, fetchAgents, runWorkflowStream } from "./api";
+import type { AgentGraph, AgentNode, WorkflowLog, WorkflowRun } from "./types";
 
 type ViewMode = "visual" | "office";
 
@@ -23,6 +24,7 @@ function App() {
   const [mode, setMode] = useState<ViewMode>("visual");
   const [task, setTask] = useState(starterTask);
   const [run, setRun] = useState<WorkflowRun | null>(null);
+  const [logs, setLogs] = useState<WorkflowLog[]>([]);
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -43,10 +45,15 @@ function App() {
 
   async function handleRun() {
     setError("");
+    setRun(null);
+    setLogs([]);
     setIsRunning(true);
     try {
-      const result = await runWorkflow(task);
+      const result = await runWorkflowStream(task, (log) => {
+        setLogs((currentLogs) => [...currentLogs, log]);
+      });
       setRun(result);
+      setLogs(result.logs);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Workflow failed.");
     } finally {
@@ -117,6 +124,7 @@ function App() {
           </button>
 
           {error ? <div className="error-box">{error}</div> : null}
+          <ActivityLog logs={run?.logs.length ? run.logs : logs} isRunning={isRunning} />
           <RunSummary run={run} />
         </aside>
       </section>
@@ -221,14 +229,68 @@ function OfficeGraph({
   );
 }
 
-function RunSummary({ run }: { run: WorkflowRun | null }) {
-  if (!run) {
+function ActivityLog({
+  logs,
+  isRunning
+}: {
+  logs: WorkflowLog[];
+  isRunning: boolean;
+}) {
+  if (logs.length === 0) {
     return (
       <div className="empty-state">
         <CheckCircle2 size={18} />
-        <span>Ready</span>
+        <span>{isRunning ? "Starting" : "Ready"}</span>
       </div>
     );
+  }
+
+  return (
+    <div className="activity-log">
+      <div className="activity-heading">
+        <strong>Agent Logs</strong>
+        <span>{isRunning ? "Running" : "Done"}</span>
+      </div>
+      {logs
+        .slice()
+        .reverse()
+        .map((log) => (
+          <div className={`log-row ${log.status}`} key={`${log.created_at}-${log.agent_id}`}>
+            <LogStatusIcon status={log.status} />
+            <div>
+              <div className="log-meta">
+                <strong>{log.agent_name}</strong>
+                <time>{formatLogTime(log.created_at)}</time>
+              </div>
+              <span>{log.message}</span>
+            </div>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+function LogStatusIcon({ status }: { status: WorkflowLog["status"] }) {
+  if (status === "completed") {
+    return <CheckCircle2 size={17} />;
+  }
+  if (status === "failed") {
+    return <AlertTriangle size={17} />;
+  }
+  return <Loader2 className="spin" size={17} />;
+}
+
+function formatLogTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(new Date(value));
+}
+
+function RunSummary({ run }: { run: WorkflowRun | null }) {
+  if (!run) {
+    return null;
   }
 
   return (
@@ -240,6 +302,13 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
           <strong>{item.worker_id}</strong>
           <span>{item.objective}</span>
         </div>
+      ))}
+      <h3>Worker Outputs</h3>
+      {run.worker_results.map((result) => (
+        <details className="worker-output" key={result.worker_id}>
+          <summary>{result.worker_name}</summary>
+          <p>{result.output}</p>
+        </details>
       ))}
       <h3>Final</h3>
       <p>{run.final_answer}</p>

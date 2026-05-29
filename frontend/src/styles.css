@@ -39,7 +39,10 @@ button {
 .run-button,
 .empty-state,
 .agent-badge,
-.result-row {
+.result-row,
+.activity-heading,
+.log-row,
+.log-meta {
   display: flex;
 }
 
@@ -204,6 +207,7 @@ h3 {
 
 .agent-badge span,
 .result-row span,
+.log-row span,
 .empty-state {
   color: #667085;
   font-size: 0.86rem;
@@ -342,6 +346,86 @@ textarea:focus {
   padding: 12px;
 }
 
+.activity-log {
+  border: 1px solid #d9e2ee;
+  border-radius: 8px;
+  margin-top: 14px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+}
+
+.activity-heading {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.activity-heading strong {
+  font-size: 0.88rem;
+}
+
+.activity-heading span {
+  border-radius: 999px;
+  background: #eaf3f0;
+  color: #1f6f65;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.log-row {
+  align-items: flex-start;
+  gap: 9px;
+  border-top: 1px solid #edf1f6;
+  padding: 10px 0;
+}
+
+.log-row:first-of-type {
+  border-top: 0;
+}
+
+.log-row svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.log-row.running svg {
+  color: #1f877b;
+}
+
+.log-row.completed svg {
+  color: #277447;
+}
+
+.log-row.failed svg {
+  color: #a3342f;
+}
+
+.log-meta {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.log-meta strong {
+  font-size: 0.84rem;
+}
+
+.log-meta time {
+  color: #8a93a3;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.log-row span,
+.worker-output p,
+.run-summary p {
+  overflow-wrap: anywhere;
+}
+
 .run-summary {
   border-top: 1px solid #e5e9f0;
   margin-top: 16px;
@@ -379,6 +463,24 @@ textarea:focus {
   color: #333d4d;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.worker-output {
+  border: 1px solid #e1e7f0;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  padding: 10px;
+}
+
+.worker-output summary {
+  color: #c23b33;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.worker-output p {
+  margin: 10px 0 0;
 }
 
 @keyframes spin {

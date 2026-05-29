@@ -24,3 +24,9 @@ npm run dev
 ## Environment
 
 Set `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` in `backend/.env`.
+
+## API
+
+- `GET /api/agents`: agent graph
+- `POST /api/runs`: complete workflow response
+- `POST /api/runs/stream`: newline-delimited live logs and final workflow response

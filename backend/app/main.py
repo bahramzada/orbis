@@ -1,14 +1,23 @@
 from contextlib import asynccontextmanager
+import asyncio
+import json
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from httpx import HTTPError
 
 from app.agents import AgentOrchestrator, AgentRegistry
 from app.config import get_settings
 from app.openrouter_client import OpenRouterClient
-from app.schemas import AgentGraphResponse, HealthResponse, RunRequest, WorkflowRun
+from app.schemas import (
+    AgentGraphResponse,
+    HealthResponse,
+    RunRequest,
+    WorkflowLog,
+    WorkflowRun,
+)
 
 
 registry = AgentRegistry()
@@ -76,3 +85,55 @@ async def run_workflow(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (RuntimeError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/runs/stream")
+async def stream_workflow(
+    payload: RunRequest,
+    orchestrator: AgentOrchestrator = Depends(get_orchestrator),
+    client: OpenRouterClient = Depends(get_client),
+) -> StreamingResponse:
+    if not client.is_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENROUTER_API_KEY is not configured.",
+        )
+
+    async def event_stream() -> AsyncIterator[str]:
+        queue: asyncio.Queue[WorkflowLog | WorkflowRun | Exception | None] = (
+            asyncio.Queue()
+        )
+
+        async def push_log(log: WorkflowLog) -> None:
+            await queue.put(log)
+
+        async def execute() -> None:
+            try:
+                result = await orchestrator.run(payload.task, log_callback=push_log)
+                await queue.put(result)
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                await queue.put(None)
+
+        run_task = asyncio.create_task(execute())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, WorkflowLog):
+                    yield _json_line("log", item.model_dump(mode="json"))
+                elif isinstance(item, WorkflowRun):
+                    yield _json_line("result", item.model_dump(mode="json"))
+                else:
+                    yield _json_line("error", {"detail": str(item)})
+        finally:
+            if not run_task.done():
+                run_task.cancel()
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+def _json_line(event_type: str, payload: object) -> str:
+    return json.dumps({"type": event_type, "payload": payload}) + "\n"

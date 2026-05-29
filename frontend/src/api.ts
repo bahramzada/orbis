@@ -1,4 +1,4 @@
-import type { AgentGraph, WorkflowRun } from "./types";
+import type { AgentGraph, WorkflowLog, WorkflowRun } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -81,4 +81,76 @@ export async function runWorkflow(task: string): Promise<WorkflowRun> {
   }
 
   return response.json() as Promise<WorkflowRun>;
+}
+
+type WorkflowStreamEvent =
+  | { type: "log"; payload: WorkflowLog }
+  | { type: "result"; payload: WorkflowRun }
+  | { type: "error"; payload: { detail?: string } };
+
+export async function runWorkflowStream(
+  task: string,
+  onLog: (log: WorkflowLog) => void
+): Promise<WorkflowRun> {
+  const response = await fetch(`${apiBaseUrl}/api/runs/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ task })
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "Workflow could not be started.");
+  }
+
+  if (!response.body) {
+    return runWorkflow(task);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalRun: WorkflowRun | null = null;
+
+  function consumeLine(line: string): void {
+    if (!line.trim()) {
+      return;
+    }
+
+    const event = JSON.parse(line) as WorkflowStreamEvent;
+    if (event.type === "log") {
+      onLog(event.payload);
+      return;
+    }
+    if (event.type === "result") {
+      finalRun = event.payload;
+      return;
+    }
+
+    throw new Error(event.payload.detail ?? "Workflow failed.");
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach(consumeLine);
+    }
+    if (done) {
+      break;
+    }
+  }
+
+  buffer += decoder.decode();
+  consumeLine(buffer);
+
+  if (!finalRun) {
+    throw new Error("Workflow finished without a result.");
+  }
+
+  return finalRun;
 }

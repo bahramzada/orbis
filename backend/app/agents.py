@@ -1,5 +1,7 @@
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from app.openrouter_client import OpenRouterClient
 from app.schemas import (
@@ -7,9 +9,13 @@ from app.schemas import (
     AgentGraphResponse,
     AgentNode,
     DelegationItem,
+    WorkflowLog,
+    WorkflowLogStatus,
     WorkerResult,
     WorkflowRun,
 )
+
+LogCallback = Callable[[WorkflowLog], Awaitable[None]]
 
 
 SUPERVISOR = AgentNode(
@@ -87,16 +93,44 @@ class AgentOrchestrator:
         self._client = client
         self._registry = registry
 
-    async def run(self, task: str) -> WorkflowRun:
+    async def run(
+        self,
+        task: str,
+        log_callback: LogCallback | None = None,
+    ) -> WorkflowRun:
+        logs: list[WorkflowLog] = []
+
+        async def emit(
+            agent: AgentNode,
+            status: WorkflowLogStatus,
+            message: str,
+        ) -> None:
+            log = WorkflowLog(
+                created_at=datetime.now(UTC).isoformat(),
+                agent_id=agent.id,
+                agent_name=agent.name,
+                status=status,
+                message=message,
+            )
+            logs.append(log)
+            if log_callback is not None:
+                await log_callback(log)
+
+        await emit(SUPERVISOR, "running", "Creating delegation plan.")
         plan = await self._create_plan(task)
+        await emit(SUPERVISOR, "completed", f"Delegated work to {len(plan)} agents.")
+
         worker_results = await asyncio.gather(
-            *(self._run_worker(task, item) for item in plan)
+            *(self._run_worker(task, item, emit) for item in plan)
         )
+        await emit(SUPERVISOR, "running", "Synthesizing worker outputs.")
         final_answer = await self._synthesize(task, worker_results)
+        await emit(SUPERVISOR, "completed", "Final answer is ready.")
 
         return WorkflowRun(
             task=task,
             model=self._client.model,
+            logs=logs,
             plan=plan,
             worker_results=list(worker_results),
             final_answer=final_answer,
@@ -122,8 +156,14 @@ class AgentOrchestrator:
         items = [DelegationItem.model_validate(item) for item in parsed]
         return self._normalize_plan(items)
 
-    async def _run_worker(self, task: str, item: DelegationItem) -> WorkerResult:
+    async def _run_worker(
+        self,
+        task: str,
+        item: DelegationItem,
+        emit: Callable[[AgentNode, WorkflowLogStatus, str], Awaitable[None]],
+    ) -> WorkerResult:
         worker = self._registry.worker_by_id(item.worker_id)
+        await emit(worker, "running", item.objective)
         content = await self._client.chat(
             [
                 {
@@ -146,6 +186,7 @@ class AgentOrchestrator:
             temperature=0.35,
             max_tokens=1200,
         )
+        await emit(worker, "completed", "Output returned to supervisor.")
         return WorkerResult(
             worker_id=worker.id,
             worker_name=worker.name,

@@ -8,9 +8,9 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 - Backend and frontend are separate applications.
 - Backend owns configuration, OpenRouter API access, agent orchestration, and API contracts.
-- Backend exposes `/health`, `/api/agents`, and `/api/runs`.
+- Backend exposes `/health`, `/api/agents`, `/api/runs`, and `/api/runs/stream`.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
-- Supervisor creates a structured delegation plan, workers run in parallel, and supervisor synthesizes the final output.
+- Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
 - Frontend owns agent management UI with two views:
   - Simple visual management
   - Habbo-style office management
@@ -23,6 +23,6 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, OpenRouter client, agent orchestration, API schemas
+- `backend/app`: FastAPI app, settings, OpenRouter client, logged agent orchestration, API schemas
 - `backend/tests`: backend test coverage
 - `frontend/src`: React application, API client, types, and styling

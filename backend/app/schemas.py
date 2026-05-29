@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 AgentKind = Literal["supervisor", "worker"]
+WorkflowLogStatus = Literal["running", "completed", "failed"]
 
 
 class AgentNode(BaseModel):
@@ -40,6 +41,14 @@ class WorkerResult(BaseModel):
     output: str
 
 
+class WorkflowLog(BaseModel):
+    created_at: str
+    agent_id: str
+    agent_name: str
+    status: WorkflowLogStatus
+    message: str
+
+
 class RunRequest(BaseModel):
     task: str = Field(min_length=3, max_length=4000)
 
@@ -47,6 +56,7 @@ class RunRequest(BaseModel):
 class WorkflowRun(BaseModel):
     task: str
     model: str
+    logs: list[WorkflowLog]
     plan: list[DelegationItem]
     worker_results: list[WorkerResult]
     final_answer: str

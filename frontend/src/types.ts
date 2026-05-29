@@ -34,9 +34,20 @@ export type WorkerResult = {
   output: string;
 };
 
+export type WorkflowLogStatus = "running" | "completed" | "failed";
+
+export type WorkflowLog = {
+  created_at: string;
+  agent_id: string;
+  agent_name: string;
+  status: WorkflowLogStatus;
+  message: string;
+};
+
 export type WorkflowRun = {
   task: string;
   model: string;
+  logs: WorkflowLog[];
   plan: DelegationItem[];
   worker_results: WorkerResult[];
   final_answer: string;
