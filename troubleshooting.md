@@ -34,3 +34,17 @@
 - **Error:** A connection string with `[YOUR-PASSWORD]` is only a template and must not be treated as an active database connection.
 - **Failed Attempts:** No live connection was attempted with the placeholder password.
 - **Solution:** `DATABASE_URL` is optional, placeholder URLs keep persistence disabled, and real Supabase URLs are converted from `postgresql://` to `postgresql+asyncpg://` internally for SQLAlchemy.
+
+## SQLAlchemy Async Startup Required Greenlet
+
+- **Context/Component:** Backend startup, SQLAlchemy async engine
+- **Error:** FastAPI failed during startup with `ValueError: the greenlet library is required to use this function`.
+- **Failed Attempts:** Restarting the backend after adding SQLAlchemy/asyncpg without `greenlet`.
+- **Solution:** Added `greenlet>=3.1.1` to `backend/requirements.txt` and installed requirements into the backend virtual environment.
+
+## Supabase TLS Require Mode With Asyncpg
+
+- **Context/Component:** Backend startup, Supabase pooler TLS
+- **Error:** FastAPI failed during startup with asyncpg SSL configuration and certificate verification errors.
+- **Failed Attempts:** Passing `DATABASE_SSL=require` directly as asyncpg `ssl` config.
+- **Solution:** Mapped `DATABASE_SSL=require` to an encrypted SSL context without certificate verification, matching common Postgres `sslmode=require` behavior; `verify-ca`/`verify-full` still use default certificate verification.

@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+import ssl
+from typing import TypeAlias
 from uuid import UUID
 
 from sqlalchemy import (
@@ -18,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.config import Settings
 from app.schemas import WorkflowRun, WorkflowRunSummary
+
+SslConfig: TypeAlias = bool | ssl.SSLContext
 
 
 metadata = MetaData()
@@ -63,7 +67,7 @@ class DatabaseRepository:
                 pool_pre_ping=True,
                 connect_args={
                     "timeout": settings.database_connect_timeout_seconds,
-                    "ssl": settings.database_ssl,
+                    "ssl": _ssl_config(settings.database_ssl),
                 },
             )
 
@@ -163,3 +167,16 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _ssl_config(value: str) -> SslConfig:
+    normalized = value.strip().lower()
+    if normalized in {"0", "false", "no", "off", "disable"}:
+        return False
+    if normalized in {"verify", "verify-ca", "verify-full", "strict"}:
+        return ssl.create_default_context()
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context

@@ -1,5 +1,5 @@
 from app.config import Settings
-from app.db import DatabaseRepository
+from app.db import DatabaseRepository, _ssl_config
 
 
 def test_database_url_is_optional() -> None:
@@ -31,3 +31,9 @@ def test_placeholder_password_keeps_database_disabled() -> None:
     )
 
     assert settings.is_database_configured is False
+
+
+def test_database_ssl_setting_is_mapped_to_asyncpg_bool() -> None:
+    assert _ssl_config("require") is not False
+    assert _ssl_config("true") is not False
+    assert _ssl_config("disable") is False
