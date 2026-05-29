@@ -37,6 +37,7 @@ export type WorkerResult = {
 export type WorkflowLogStatus = "running" | "completed" | "failed";
 
 export type WorkflowLog = {
+  run_id: string;
   created_at: string;
   agent_id: string;
   agent_name: string;
@@ -45,6 +46,7 @@ export type WorkflowLog = {
 };
 
 export type WorkflowRun = {
+  run_id: string;
   task: string;
   model: string;
   logs: WorkflowLog[];

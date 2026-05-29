@@ -3,13 +3,14 @@ import asyncio
 import json
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from httpx import HTTPError
 
 from app.agents import AgentOrchestrator, AgentRegistry
 from app.config import get_settings
+from app.db import DatabaseRepository
 from app.openrouter_client import OpenRouterClient
 from app.schemas import (
     AgentGraphResponse,
@@ -17,6 +18,7 @@ from app.schemas import (
     RunRequest,
     WorkflowLog,
     WorkflowRun,
+    WorkflowRunSummary,
 )
 
 
@@ -27,10 +29,14 @@ registry = AgentRegistry()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     client = OpenRouterClient(settings)
+    database = DatabaseRepository(settings)
+    await database.init()
     app.state.openrouter_client = client
+    app.state.database = database
     app.state.orchestrator = AgentOrchestrator(client, registry)
     yield
     await client.close()
+    await database.close()
 
 
 app = FastAPI(title="Orbis API", version="0.1.0", lifespan=lifespan)
@@ -53,11 +59,19 @@ def get_client() -> OpenRouterClient:
     return app.state.openrouter_client
 
 
+def get_database() -> DatabaseRepository:
+    return app.state.database
+
+
 @app.get("/health", response_model=HealthResponse)
-async def health(client: OpenRouterClient = Depends(get_client)) -> HealthResponse:
+async def health(
+    client: OpenRouterClient = Depends(get_client),
+    database: DatabaseRepository = Depends(get_database),
+) -> HealthResponse:
     return HealthResponse(
         status="ok",
         openrouter_configured=client.is_configured,
+        database_configured=database.is_configured,
         model=client.model,
     )
 
@@ -72,6 +86,7 @@ async def run_workflow(
     payload: RunRequest,
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
+    database: DatabaseRepository = Depends(get_database),
 ) -> WorkflowRun:
     if not client.is_configured:
         raise HTTPException(
@@ -80,11 +95,21 @@ async def run_workflow(
         )
 
     try:
-        return await orchestrator.run(payload.task)
+        result = await orchestrator.run(payload.task)
+        await database.save_workflow_run(result)
+        return result
     except HTTPError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (RuntimeError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/runs", response_model=list[WorkflowRunSummary])
+async def list_workflow_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    database: DatabaseRepository = Depends(get_database),
+) -> list[WorkflowRunSummary]:
+    return await database.list_workflow_runs(limit)
 
 
 @app.post("/api/runs/stream")
@@ -92,6 +117,7 @@ async def stream_workflow(
     payload: RunRequest,
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
+    database: DatabaseRepository = Depends(get_database),
 ) -> StreamingResponse:
     if not client.is_configured:
         raise HTTPException(
@@ -110,6 +136,7 @@ async def stream_workflow(
         async def execute() -> None:
             try:
                 result = await orchestrator.run(payload.task, log_callback=push_log)
+                await database.save_workflow_run(result)
                 await queue.put(result)
             except Exception as exc:
                 await queue.put(exc)

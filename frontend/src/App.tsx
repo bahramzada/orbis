@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -296,24 +297,87 @@ function RunSummary({ run }: { run: WorkflowRun | null }) {
   return (
     <div className="run-summary">
       <div className="model-pill">{run.model}</div>
-      <h3>Plan</h3>
-      {run.plan.map((item) => (
-        <div className="result-row" key={item.worker_id}>
-          <strong>{item.worker_id}</strong>
-          <span>{item.objective}</span>
-        </div>
-      ))}
+      <details className="plan-output">
+        <summary>
+          <span>Plan</span>
+          <small>{run.plan.length} agents</small>
+        </summary>
+        {run.plan.map((item) => (
+          <div className="result-row" key={item.worker_id}>
+            <strong>{item.worker_id}</strong>
+            <span>{item.objective}</span>
+          </div>
+        ))}
+      </details>
       <h3>Worker Outputs</h3>
       {run.worker_results.map((result) => (
         <details className="worker-output" key={result.worker_id}>
           <summary>{result.worker_name}</summary>
-          <p>{result.output}</p>
+          <MarkdownContent content={result.output} />
         </details>
       ))}
       <h3>Final</h3>
-      <p>{run.final_answer}</p>
+      <section className="final-output">
+        <MarkdownContent content={run.final_answer} />
+      </section>
     </div>
   );
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-content">
+      {content.split("\n").map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return null;
+        }
+        if (/^-{3,}$/.test(trimmed)) {
+          return <hr key={`${index}-${trimmed}`} />;
+        }
+        if (trimmed.startsWith("### ")) {
+          return <h5 key={`${index}-${trimmed}`}>{renderInlineMarkdown(trimmed.slice(4))}</h5>;
+        }
+        if (trimmed.startsWith("## ")) {
+          return <h4 key={`${index}-${trimmed}`}>{renderInlineMarkdown(trimmed.slice(3))}</h4>;
+        }
+        if (trimmed.startsWith("# ")) {
+          return <h4 key={`${index}-${trimmed}`}>{renderInlineMarkdown(trimmed.slice(2))}</h4>;
+        }
+        if (/^[-*]\s+/.test(trimmed)) {
+          return (
+            <p className="markdown-list-line" key={`${index}-${trimmed}`}>
+              {renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, ""))}
+            </p>
+          );
+        }
+        if (/^\d+\.\s+/.test(trimmed)) {
+          return (
+            <p className="markdown-list-line numbered" key={`${index}-${trimmed}`}>
+              {renderInlineMarkdown(trimmed)}
+            </p>
+          );
+        }
+        if (trimmed.startsWith("|")) {
+          return (
+            <pre className="markdown-table-line" key={`${index}-${trimmed}`}>
+              {trimmed}
+            </pre>
+          );
+        }
+        return <p key={`${index}-${trimmed}`}>{renderInlineMarkdown(trimmed)}</p>;
+      })}
+    </div>
+  );
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={`${index}-${part}`}>{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
 }
 
 export default App;

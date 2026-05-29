@@ -28,6 +28,12 @@ class Settings(BaseSettings):
         alias="FRONTEND_ORIGINS",
     )
     request_timeout_seconds: float = Field(default=45.0, alias="REQUEST_TIMEOUT_SECONDS")
+    database_url: str = Field(default="", alias="DATABASE_URL")
+    database_connect_timeout_seconds: float = Field(
+        default=10.0,
+        alias="DATABASE_CONNECT_TIMEOUT_SECONDS",
+    )
+    database_ssl: str = Field(default="require", alias="DATABASE_SSL")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),
@@ -39,6 +45,20 @@ class Settings(BaseSettings):
     @property
     def is_openrouter_configured(self) -> bool:
         return bool(self.openrouter_api_key.strip())
+
+    @property
+    def is_database_configured(self) -> bool:
+        value = self.database_url.strip()
+        return bool(value) and "[YOUR-PASSWORD]" not in value
+
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        value = self.database_url.strip()
+        if value.startswith("postgresql+asyncpg://"):
+            return value
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return value
 
     @property
     def cors_origins(self) -> list[str]:

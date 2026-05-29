@@ -11,18 +11,20 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend exposes `/health`, `/api/agents`, `/api/runs`, and `/api/runs/stream`.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
 - Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
+- Supabase/Postgres persistence is optional and controlled by `DATABASE_URL`.
+- When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
 - Frontend owns agent management UI with two views:
   - Simple visual management
   - Habbo-style office management
 
 ## Tech Stack
 
-- Backend: Python, FastAPI, Pydantic, HTTPX
+- Backend: Python, FastAPI, Pydantic, HTTPX, SQLAlchemy, asyncpg
 - Frontend: React, TypeScript, Vite, lucide-react
 - Configuration: `.env` files, no hardcoded secrets
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, OpenRouter client, logged agent orchestration, API schemas
+- `backend/app`: FastAPI app, settings, OpenRouter client, Supabase/Postgres persistence, logged agent orchestration, API schemas
 - `backend/tests`: backend test coverage
 - `frontend/src`: React application, API client, types, and styling

@@ -42,6 +42,7 @@ class WorkerResult(BaseModel):
 
 
 class WorkflowLog(BaseModel):
+    run_id: str
     created_at: str
     agent_id: str
     agent_name: str
@@ -54,6 +55,7 @@ class RunRequest(BaseModel):
 
 
 class WorkflowRun(BaseModel):
+    run_id: str
     task: str
     model: str
     logs: list[WorkflowLog]
@@ -62,7 +64,17 @@ class WorkflowRun(BaseModel):
     final_answer: str
 
 
+class WorkflowRunSummary(BaseModel):
+    run_id: str
+    task: str
+    model: str
+    status: str
+    created_at: str
+    completed_at: str
+
+
 class HealthResponse(BaseModel):
     status: str
     openrouter_configured: bool
+    database_configured: bool
     model: str

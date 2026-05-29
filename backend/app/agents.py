@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from app.openrouter_client import OpenRouterClient
 from app.schemas import (
@@ -98,6 +99,7 @@ class AgentOrchestrator:
         task: str,
         log_callback: LogCallback | None = None,
     ) -> WorkflowRun:
+        run_id = str(uuid4())
         logs: list[WorkflowLog] = []
 
         async def emit(
@@ -106,6 +108,7 @@ class AgentOrchestrator:
             message: str,
         ) -> None:
             log = WorkflowLog(
+                run_id=run_id,
                 created_at=datetime.now(UTC).isoformat(),
                 agent_id=agent.id,
                 agent_name=agent.name,
@@ -128,6 +131,7 @@ class AgentOrchestrator:
         await emit(SUPERVISOR, "completed", "Final answer is ready.")
 
         return WorkflowRun(
+            run_id=run_id,
             task=task,
             model=self._client.model,
             logs=logs,

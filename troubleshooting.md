@@ -20,3 +20,17 @@
 - **Error:** A run could spend more than a minute across supervisor planning, four worker calls, and final synthesis while the frontend only showed a spinner.
 - **Failed Attempts:** The initial `POST /api/runs` response returned only after the full workflow, so partial agent status was not visible.
 - **Solution:** Added `POST /api/runs/stream` with newline-delimited log/result events and updated the frontend to render live agent logs, worker outputs, and final answer.
+
+## Result Panel Stretched Agent Graph
+
+- **Context/Component:** Frontend layout, workflow result UI
+- **Error:** After a long workflow finished, the right result panel increased page height and stretched the left graph, causing agent cards and connection lines to drift apart.
+- **Failed Attempts:** The initial flex layout let both columns match the tallest content, so long final answers resized the graph panel.
+- **Solution:** Made the desktop app viewport-bounded, kept the graph panel fixed to available height, moved overflow to the right control panel, capped log/final sections, and restored normal stacked flow on mobile.
+
+## Supabase URL Requires Real Encoded Password
+
+- **Context/Component:** Backend database configuration, Supabase Postgres pooler
+- **Error:** A connection string with `[YOUR-PASSWORD]` is only a template and must not be treated as an active database connection.
+- **Failed Attempts:** No live connection was attempted with the placeholder password.
+- **Solution:** `DATABASE_URL` is optional, placeholder URLs keep persistence disabled, and real Supabase URLs are converted from `postgresql://` to `postgresql+asyncpg://` internally for SQLAlchemy.
