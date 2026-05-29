@@ -11,6 +11,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend exposes `/health`, `/api/agents`, `/api/runs`, and `/api/runs/stream`.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
 - Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
+- Backend prompt templates are centralized in `backend/app/prompts.py` with strict planning, role-specific worker instructions, and compact final synthesis rules.
 - Supabase/Postgres persistence is optional and controlled by `DATABASE_URL`.
 - When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
 - Frontend owns agent management UI with two views:

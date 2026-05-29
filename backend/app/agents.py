@@ -5,6 +5,13 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.openrouter_client import OpenRouterClient
+from app.prompts import (
+    build_supervisor_plan_system_prompt,
+    build_synthesis_system_prompt,
+    build_synthesis_user_prompt,
+    build_worker_system_prompt,
+    build_worker_user_prompt,
+)
 from app.schemas import (
     AgentEdge,
     AgentGraphResponse,
@@ -141,16 +148,9 @@ class AgentOrchestrator:
         )
 
     async def _create_plan(self, task: str) -> list[DelegationItem]:
-        prompt = (
-            "You are the supervisor in a five-agent AI system. "
-            "Create exactly four delegation items, one for each worker id: "
-            "researcher, strategist, builder, reviewer. "
-            "Return strict JSON as an array. Each item must include "
-            "worker_id, objective, and expected_output."
-        )
         content = await self._client.chat(
             [
-                {"role": "system", "content": prompt},
+                {"role": "system", "content": build_supervisor_plan_system_prompt()},
                 {"role": "user", "content": task},
             ],
             temperature=0.2,
@@ -172,18 +172,19 @@ class AgentOrchestrator:
             [
                 {
                     "role": "system",
-                    "content": (
-                        f"You are {worker.name}, the {worker.role} worker. "
-                        f"Goal: {worker.goal} "
-                        "Respond with concise, practical output for the supervisor."
+                    "content": build_worker_system_prompt(
+                        worker_id=worker.id,
+                        worker_name=worker.name,
+                        worker_role=worker.role,
+                        worker_goal=worker.goal,
                     ),
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"Main task: {task}\n"
-                        f"Your objective: {item.objective}\n"
-                        f"Expected output: {item.expected_output}"
+                    "content": build_worker_user_prompt(
+                        main_task=task,
+                        objective=item.objective,
+                        expected_output=item.expected_output,
                     ),
                 },
             ],
@@ -211,14 +212,14 @@ class AgentOrchestrator:
             [
                 {
                     "role": "system",
-                    "content": (
-                        "You are the supervisor. Combine worker results into a "
-                        "clear final answer with decisions, risks, and next steps."
-                    ),
+                    "content": build_synthesis_system_prompt(),
                 },
                 {
                     "role": "user",
-                    "content": f"Task:\n{task}\n\nWorker results:\n{worker_payload}",
+                    "content": build_synthesis_user_prompt(
+                        task=task,
+                        worker_payload=worker_payload,
+                    ),
                 },
             ],
             temperature=0.25,
