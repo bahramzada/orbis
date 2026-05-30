@@ -15,7 +15,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend prompt templates are centralized in `backend/app/prompts.py` with strict planning, role-specific worker instructions, and compact final synthesis rules.
 - Supabase/Postgres persistence is optional and controlled by `DATABASE_URL`.
 - When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
-- Production mode requires bearer-token protection for protected API endpoints, strict non-local CORS origins, verified database TLS, and Alembic-managed schemas.
+- Production mode requires bearer-token protection for protected API endpoints, strict non-local CORS origins, encrypted database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
 - Database schema management uses Alembic migrations and defaults to startup auto-migration via `DATABASE_AUTO_MIGRATE=true` when a database is configured.
 - AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.

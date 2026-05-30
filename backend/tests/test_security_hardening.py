@@ -105,3 +105,30 @@ def test_production_security_guard_rejects_missing_api_token() -> None:
 
     with pytest.raises(RuntimeError, match="ORBIS_API_TOKEN"):
         production_settings.validate_security_settings()
+
+
+def test_production_security_guard_accepts_supabase_pooler_ssl_mode() -> None:
+    production_settings = Settings(
+        APP_ENV="production",
+        ORBIS_API_TOKEN="test-token",
+        DATABASE_AUTO_CREATE_TABLES=False,
+        DATABASE_SSL="insecure-require",
+        FRONTEND_ORIGINS="https://orbis.example.com",
+        FRONTEND_ORIGIN="",
+    )
+
+    production_settings.validate_security_settings()
+
+
+def test_production_security_guard_rejects_disabled_database_ssl() -> None:
+    production_settings = Settings(
+        APP_ENV="production",
+        ORBIS_API_TOKEN="test-token",
+        DATABASE_AUTO_CREATE_TABLES=False,
+        DATABASE_SSL="disabled",
+        FRONTEND_ORIGINS="https://orbis.example.com",
+        FRONTEND_ORIGIN="",
+    )
+
+    with pytest.raises(RuntimeError, match="Encrypted DATABASE_SSL"):
+        production_settings.validate_security_settings()

@@ -47,7 +47,7 @@
 - **Context/Component:** Backend startup, Supabase pooler TLS
 - **Error:** FastAPI failed during startup with asyncpg SSL configuration and certificate verification errors.
 - **Failed Attempts:** Passing `DATABASE_SSL=require` directly as asyncpg `ssl` config.
-- **Solution:** Mapped `DATABASE_SSL=require` to a default verified SSL context for production safety. Use `DATABASE_SSL=insecure-require` only for explicitly accepted local/provider certificate edge cases.
+- **Solution:** Mapped `DATABASE_SSL=require` to a default verified SSL context for production safety and allowed `DATABASE_SSL=insecure-require` in production for Supabase poolers that need libpq-style encrypted mode without hostname verification. `DATABASE_SSL=disabled` remains blocked in production.
 
 ## Optional Database Startup Resilience
 

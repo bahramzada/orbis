@@ -195,7 +195,7 @@ DATABASE_AUTO_MIGRATE=true
 
 If your database password contains reserved URL characters, URL-encode it before placing it in the connection string.
 
-`DATABASE_SSL=require` uses certificate verification by default. Use `DATABASE_SSL=insecure-require` only when you explicitly accept the risk for a local/provider certificate edge case.
+`DATABASE_SSL=require` uses certificate verification by default. Supabase poolers can require libpq-style encrypted mode without hostname verification; use `DATABASE_SSL=insecure-require` for that deployment case.
 
 When `DATABASE_URL` is configured, Orbis runs Alembic migrations automatically during backend startup by default. If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
 

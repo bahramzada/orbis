@@ -147,9 +147,8 @@ class Settings(BaseSettings):
             "off",
             "disable",
             "disabled",
-            "insecure-require",
         }:
-            raise RuntimeError("Verified DATABASE_SSL is required in production.")
+            raise RuntimeError("Encrypted DATABASE_SSL is required in production.")
         if any(
             marker in origin
             for origin in self.cors_origins
