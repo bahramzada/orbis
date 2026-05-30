@@ -13,6 +13,7 @@ def test_database_url_is_optional() -> None:
     repository = DatabaseRepository(settings)
 
     assert settings.is_database_configured is False
+    assert repository.is_persistence_configured is False
     assert repository.is_configured is False
 
 
@@ -84,6 +85,7 @@ def test_pool_settings_are_configurable() -> None:
 
     repository = DatabaseRepository(settings)
 
+    assert repository.is_persistence_configured is True
     assert repository.is_configured is True
 
 
@@ -119,6 +121,7 @@ async def _run_database_read_failure_test() -> None:
     repository._engine = cast(AsyncEngine, BrokenEngine())
 
     assert await repository.list_agent_profiles() == []
+    assert repository.is_persistence_configured is True
     assert repository.is_configured is False
     assert repository.status == "unavailable"
     assert "database unavailable" in repository.last_error

@@ -167,7 +167,7 @@ async def health(
     return HealthResponse(
         status="ok",
         openrouter_configured=client.is_configured,
-        database_configured=database.is_configured,
+        database_configured=database.is_persistence_configured,
         database_status=database.status,
         model=client.model,
     )

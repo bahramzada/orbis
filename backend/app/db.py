@@ -197,6 +197,10 @@ class DatabaseRepository:
         return self._engine is not None
 
     @property
+    def is_persistence_configured(self) -> bool:
+        return self._settings.is_database_configured
+
+    @property
     def status(self) -> str:
         if not self._settings.is_database_configured:
             return "disabled"
