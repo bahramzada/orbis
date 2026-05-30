@@ -81,8 +81,8 @@
 
 - **Context/Component:** Coolify backend, Supabase/Postgres, Alembic
 - **Error:** Backend started with `Database operation failed; persistence is disabled for this process`, while `/health` showed database persistence was not active.
-- **Failed Attempts:** Running `alembic upgrade head` manually after dropping Supabase tables did not make the startup failure self-explanatory in application logs.
-- **Solution:** Added `DATABASE_AUTO_MIGRATE` support, aligned Alembic with the same asyncpg TLS settings used by the app, verified required tables during startup, exposed `database_status` in `/health`, separated DB env configuration from active connection availability, and logged sanitized operation/error details so Coolify shows the exact failing DB step.
+- **Failed Attempts:** Running `alembic upgrade head` manually after dropping Supabase tables did not make the startup failure self-explanatory in application logs; `/health` later showed `database_configured=true` and `database_status=unavailable`.
+- **Solution:** Added `DATABASE_AUTO_MIGRATE` support, aligned Alembic with the same asyncpg TLS settings used by the app, verified required tables during startup, exposed `database_status` in `/health`, separated DB env configuration from active connection availability, logged sanitized operation/error details, then applied Alembic migrations to the configured Supabase database and verified persistence reports `ready`.
 
 ## Office View Mobile Agent Overlap
 
