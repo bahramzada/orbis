@@ -7,13 +7,15 @@ from alembic.config import Config
 from app.config import Settings
 
 
-def _alembic_config() -> Config:
+def _alembic_config(settings: Settings) -> Config:
     backend_dir = Path(__file__).resolve().parents[1]
-    return Config(str(backend_dir / "alembic.ini"))
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.attributes["settings"] = settings
+    return config
 
 
-def _upgrade_to_head(_settings: Settings) -> None:
-    command.upgrade(_alembic_config(), "head")
+def _upgrade_to_head(settings: Settings) -> None:
+    command.upgrade(_alembic_config(settings), "head")
 
 
 async def run_database_migrations(settings: Settings) -> None:

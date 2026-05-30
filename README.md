@@ -190,21 +190,19 @@ DATABASE_POOL_SIZE=3
 DATABASE_MAX_OVERFLOW=2
 DATABASE_POOL_TIMEOUT_SECONDS=10
 DATABASE_AUTO_CREATE_TABLES=false
-DATABASE_AUTO_MIGRATE=false
+DATABASE_AUTO_MIGRATE=true
 ```
 
 If your database password contains reserved URL characters, URL-encode it before placing it in the connection string.
 
 `DATABASE_SSL=require` uses certificate verification by default. Use `DATABASE_SSL=insecure-require` only when you explicitly accept the risk for a local/provider certificate edge case.
 
-For schema management, use Alembic:
+When `DATABASE_URL` is configured, Orbis runs Alembic migrations automatically during backend startup by default. If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
 
 ```bash
 cd backend
 alembic upgrade head
 ```
-
-For Coolify-style deployments, set `DATABASE_AUTO_MIGRATE=true` on the backend app if you want the API container to apply Alembic migrations automatically during startup.
 
 Main persisted entities:
 
@@ -286,7 +284,7 @@ npm run build
 
 - Keep secrets only in environment variables.
 - Put the FastAPI app behind Nginx or another reverse proxy.
-- Use Alembic migrations instead of relying on automatic table creation.
+- Keep `DATABASE_AUTO_MIGRATE=true` for simple Docker/Coolify deployments; set it to `false` only when migrations are handled by a separate release step.
 - Tune `WORKFLOW_MAX_CONCURRENCY` according to VPS size and OpenRouter rate limits.
 - Keep `DATABASE_POOL_SIZE` small for Supabase pooler-backed deployments.
 - Monitor `/metrics`, workflow duration, provider errors, and database latency.

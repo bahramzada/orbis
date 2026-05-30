@@ -2,8 +2,11 @@ import asyncio
 import ssl
 from typing import cast
 
+import pytest
+from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app import migration_runner
 from app.config import Settings
 from app.db import DatabaseRepository, _ssl_config, metadata
 
@@ -90,14 +93,38 @@ def test_pool_settings_are_configurable() -> None:
 
 
 def test_runtime_performance_settings_have_safe_defaults() -> None:
-    settings = Settings(DATABASE_AUTO_MIGRATE=False)
+    settings = Settings(DATABASE_AUTO_MIGRATE=True)
 
     assert settings.workflow_max_concurrency >= 1
     assert settings.workflow_step_timeout_seconds > 0
     assert settings.openrouter_max_connections >= settings.openrouter_max_keepalive
     assert settings.openrouter_retry_attempts >= 1
     assert settings.database_pool_size >= 1
-    assert Settings.model_fields["database_auto_migrate"].default is False
+    assert Settings.model_fields["database_auto_migrate"].default is True
+    assert Settings(DATABASE_AUTO_MIGRATE=False).database_auto_migrate is False
+
+
+def test_migration_runner_uses_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    settings = Settings(
+        DATABASE_URL=(
+            "postgresql://postgres.example:secret"
+            "@aws-1-ap-northeast-1.pooler.supabase.com:5432/postgres"
+        ),
+        DATABASE_SSL="require",
+    )
+
+    def fake_upgrade(config: Config, revision: str) -> None:
+        captured["settings"] = config.attributes["settings"]
+        captured["revision"] = revision
+
+    monkeypatch.setattr(migration_runner.command, "upgrade", fake_upgrade)
+
+    migration_runner._upgrade_to_head(settings)
+
+    assert captured == {"settings": settings, "revision": "head"}
 
 
 def test_database_read_failure_disables_optional_persistence() -> None:

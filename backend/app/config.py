@@ -76,7 +76,7 @@ class Settings(BaseSettings):
         alias="DATABASE_AUTO_CREATE_TABLES",
     )
     database_auto_migrate: bool = Field(
-        default=False,
+        default=True,
         alias="DATABASE_AUTO_MIGRATE",
     )
     max_recent_runs: int = Field(default=100, alias="MAX_RECENT_RUNS")

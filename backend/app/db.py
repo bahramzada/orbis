@@ -545,7 +545,8 @@ class DatabaseRepository:
             raise RuntimeError(
                 "Database schema is incomplete. "
                 f"Missing tables: {missing}. "
-                "Run `alembic upgrade head` or set DATABASE_AUTO_MIGRATE=true."
+                "Keep DATABASE_AUTO_MIGRATE=true for automatic startup migrations, "
+                "or run `alembic upgrade head` from a release step."
             )
 
     def _disable_after_error(self, operation: str, exc: Exception) -> None:

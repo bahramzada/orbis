@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db import _ssl_config, metadata
 
 
@@ -17,8 +17,15 @@ if config.config_file_name is not None:
 target_metadata = metadata
 
 
+def _active_settings() -> Settings:
+    configured_settings = config.attributes.get("settings")
+    if isinstance(configured_settings, Settings):
+        return configured_settings
+    return get_settings()
+
+
 def run_migrations_offline() -> None:
-    settings = get_settings()
+    settings = _active_settings()
     context.configure(
         url=settings.sqlalchemy_database_url,
         target_metadata=target_metadata,
@@ -38,7 +45,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    settings = get_settings()
+    settings = _active_settings()
     connectable = create_async_engine(
         settings.sqlalchemy_database_url,
         poolclass=pool.NullPool,

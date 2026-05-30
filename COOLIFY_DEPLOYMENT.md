@@ -24,7 +24,7 @@ DATABASE_AUTO_MIGRATE=true
 PORT=8000
 ```
 
-With `DATABASE_AUTO_MIGRATE=true`, the backend applies Alembic migrations during startup. If you prefer manual migrations, set it to `false` and run this from the backend container shell before first production use:
+With `DATABASE_AUTO_MIGRATE=true`, the backend applies Alembic migrations during startup. This is the recommended default for simple Coolify deployments. If you prefer a separate migration release step, set it to `false` and run this from the backend container shell before first production use:
 
 ```bash
 alembic upgrade head
