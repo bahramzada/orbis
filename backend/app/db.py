@@ -473,10 +473,22 @@ def _ssl_config(value: str) -> SslConfig:
     normalized = value.strip().lower()
     if normalized in {"0", "false", "no", "off", "disable"}:
         return False
-    if normalized in {"verify", "verify-ca", "verify-full", "strict"}:
+    if normalized in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "require",
+        "verify",
+        "verify-ca",
+        "verify-full",
+        "strict",
+    }:
         return ssl.create_default_context()
+    if normalized == "insecure-require":
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return context
 
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    return context
+    raise ValueError("Unsupported DATABASE_SSL mode.")

@@ -14,6 +14,18 @@ import type {
 } from "./types";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const apiToken = import.meta.env.VITE_ORBIS_API_TOKEN ?? "";
+
+function authHeaders(): HeadersInit {
+  return apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
+}
+
+function jsonHeaders(): HeadersInit {
+  return {
+    "Content-Type": "application/json",
+    ...authHeaders()
+  };
+}
 
 export const fallbackGraph: AgentGraph = {
   agents: [
@@ -72,7 +84,9 @@ export const fallbackGraph: AgentGraph = {
 };
 
 export async function fetchAgents(): Promise<AgentGraph> {
-  const response = await fetch(`${apiBaseUrl}/api/agents`);
+  const response = await fetch(`${apiBaseUrl}/api/agents`, {
+    headers: authHeaders()
+  });
   if (!response.ok) {
     throw new Error("Agent graph could not be loaded.");
   }
@@ -85,9 +99,7 @@ export async function runWorkflow(
 ): Promise<WorkflowRun> {
   const response = await fetch(`${apiBaseUrl}/api/runs`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({ task, ...options })
   });
 
@@ -114,9 +126,7 @@ export async function runWorkflowStream(
 ): Promise<WorkflowRun> {
   const response = await fetch(`${apiBaseUrl}/api/runs/stream`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({ task, ...options }),
     signal
   });
@@ -140,7 +150,12 @@ export async function runWorkflowStream(
       return;
     }
 
-    const event = JSON.parse(line) as WorkflowStreamEvent;
+    let event: WorkflowStreamEvent;
+    try {
+      event = JSON.parse(line) as WorkflowStreamEvent;
+    } catch {
+      throw new Error("Workflow stream returned malformed data.");
+    }
     if (event.type === "log") {
       onLog(event.payload);
       return;
@@ -181,7 +196,9 @@ export async function runWorkflowStream(
 }
 
 export async function fetchAgentProfiles(): Promise<AgentProfile[]> {
-  const response = await fetch(`${apiBaseUrl}/api/agent-profiles`);
+  const response = await fetch(`${apiBaseUrl}/api/agent-profiles`, {
+    headers: authHeaders()
+  });
   if (!response.ok) {
     throw new Error("Agent profiles could not be loaded.");
   }
@@ -193,9 +210,7 @@ export async function saveAgentProfiles(
 ): Promise<AgentProfile[]> {
   const response = await fetch(`${apiBaseUrl}/api/agent-profiles`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify(profiles)
   });
   if (!response.ok) {
@@ -205,7 +220,9 @@ export async function saveAgentProfiles(
 }
 
 export async function fetchTemplates(): Promise<WorkflowTemplate[]> {
-  const response = await fetch(`${apiBaseUrl}/api/templates`);
+  const response = await fetch(`${apiBaseUrl}/api/templates`, {
+    headers: authHeaders()
+  });
   if (!response.ok) {
     throw new Error("Templates could not be loaded.");
   }
@@ -213,7 +230,9 @@ export async function fetchTemplates(): Promise<WorkflowTemplate[]> {
 }
 
 export async function fetchMemories(): Promise<MemoryItem[]> {
-  const response = await fetch(`${apiBaseUrl}/api/memories`);
+  const response = await fetch(`${apiBaseUrl}/api/memories`, {
+    headers: authHeaders()
+  });
   if (!response.ok) {
     throw new Error("Memory items could not be loaded.");
   }
@@ -228,9 +247,7 @@ export async function createMemory(payload: {
 }): Promise<MemoryItem> {
   const response = await fetch(`${apiBaseUrl}/api/memories`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
@@ -246,9 +263,7 @@ export async function previewPlan(
 ): Promise<DelegationItem[]> {
   const response = await fetch(`${apiBaseUrl}/api/plans`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({
       task,
       memory_ids: memoryIds,
@@ -263,7 +278,9 @@ export async function previewPlan(
 }
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
-  const response = await fetch(`${apiBaseUrl}/api/runs/${runId}`);
+  const response = await fetch(`${apiBaseUrl}/api/runs/${runId}`, {
+    headers: authHeaders()
+  });
   if (!response.ok) {
     throw new Error("Run detail could not be loaded.");
   }
@@ -282,9 +299,7 @@ export async function rerunWorker(
 ): Promise<RunDetail> {
   const response = await fetch(`${apiBaseUrl}/api/runs/${runId}/rerun/worker/${workerId}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify(options)
   });
   if (!response.ok) {
@@ -300,9 +315,7 @@ export async function rerunSynthesis(
 ): Promise<RunDetail> {
   const response = await fetch(`${apiBaseUrl}/api/runs/${runId}/rerun/synthesis`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({
       output_format: outputFormat,
       memory_ids: memoryIds
@@ -320,9 +333,7 @@ export async function compareEvaluations(
 ): Promise<EvaluationResult[]> {
   const response = await fetch(`${apiBaseUrl}/api/evaluations/compare`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({
       run_ids: runIds,
       rubric

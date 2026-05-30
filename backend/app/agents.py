@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import cast
 from uuid import uuid4
 
 from app.config import Settings, get_settings
@@ -25,6 +27,7 @@ from app.schemas import (
     OutputFormat,
     ToolCall,
     ToolCallStatus,
+    WorkerId,
     WorkflowLog,
     WorkflowLogStatus,
     WorkerResult,
@@ -33,6 +36,7 @@ from app.schemas import (
 
 LogCallback = Callable[[WorkflowLog], Awaitable[None]]
 ToolCallback = Callable[[ToolCall], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 SUPERVISOR = AgentNode(
@@ -257,9 +261,10 @@ class AgentOrchestrator:
                 status = "cancelled"
                 await emit(SUPERVISOR, "cancelled", "Workflow was cancelled.")
                 raise
-            except Exception as exc:
+            except Exception:
                 status = "failed"
-                await emit(SUPERVISOR, "failed", f"Workflow failed: {_safe_error(exc)}")
+                logger.exception("Workflow orchestration failed.")
+                await emit(SUPERVISOR, "failed", "Workflow failed.")
                 raise
             finally:
                 metrics.observe(
@@ -347,15 +352,13 @@ class AgentOrchestrator:
                 timeout=self._settings.workflow_step_timeout_seconds,
             )
             await emit(worker, "completed", "Output returned to supervisor.")
-        except Exception as exc:
-            content = (
-                f"{worker.name} failed to complete this step. "
-                f"Reason: {_safe_error(exc)}"
-            )
+        except Exception:
+            logger.exception("Worker step failed.", extra={"worker_id": worker.id})
+            content = f"{worker.name} failed to complete this step."
             await emit(worker, "failed", content)
             metrics.increment("orbis_worker_failures_total", {"worker_id": worker.id})
         return WorkerResult(
-            worker_id=worker.id,
+            worker_id=cast(WorkerId, worker.id),
             worker_name=profile.name if profile else worker.name,
             objective=item.objective,
             output=content,
@@ -429,14 +432,15 @@ class AgentOrchestrator:
         normalized: list[DelegationItem] = []
 
         for worker in WORKERS:
-            if worker.id in disabled_ids:
+            worker_id = cast(WorkerId, worker.id)
+            if worker_id in disabled_ids:
                 continue
-            item = by_worker.get(worker.id)
+            item = by_worker.get(worker_id)
             if item is None:
                 if not include_missing:
                     continue
                 item = DelegationItem(
-                    worker_id=worker.id,
+                    worker_id=worker_id,
                     objective=f"Handle the {worker.role.lower()} angle.",
                     expected_output="Concise findings for supervisor synthesis.",
                 )
@@ -552,8 +556,3 @@ class AgentOrchestrator:
     ) -> int:
         text = task + final_answer + "".join(result.output for result in worker_results)
         return max(1, len(text) // 4)
-
-
-def _safe_error(exc: Exception) -> str:
-    message = str(exc) or exc.__class__.__name__
-    return message.replace("\n", " ")[:240]

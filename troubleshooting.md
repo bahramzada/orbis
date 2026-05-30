@@ -47,7 +47,7 @@
 - **Context/Component:** Backend startup, Supabase pooler TLS
 - **Error:** FastAPI failed during startup with asyncpg SSL configuration and certificate verification errors.
 - **Failed Attempts:** Passing `DATABASE_SSL=require` directly as asyncpg `ssl` config.
-- **Solution:** Mapped `DATABASE_SSL=require` to an encrypted SSL context without certificate verification, matching common Postgres `sslmode=require` behavior; `verify-ca`/`verify-full` still use default certificate verification.
+- **Solution:** Mapped `DATABASE_SSL=require` to a default verified SSL context for production safety. Use `DATABASE_SSL=insecure-require` only for explicitly accepted local/provider certificate edge cases.
 
 ## Completed Workflow Kept Showing Spinning Log Rows
 
@@ -90,3 +90,10 @@
 - **Error:** The pixel/isometric scene remained visually noisy and oversized for an operational dashboard, especially on mobile and wide desktop.
 - **Failed Attempts:** Compacting the pixel scene and shortening labels improved measurements but did not produce a clean enough product UI.
 - **Solution:** Rolled the Office view back toward the original simple management-board concept, using a light bounded floor grid and self-contained agent cards; verified 1280x720, 2048x1325, and 390x844 with zero agent overlap, zero text clipping, no horizontal overflow, and no console errors.
+
+## Security Scanner Tooling Needed Temporary Paths
+
+- **Context/Component:** Audit tooling, uv, pip-audit, Bandit
+- **Error:** `uv tool run` could not use the default cache/tool directories in the sandbox and later failed DNS lookup without network access.
+- **Failed Attempts:** Running `uv tool run pip-audit` and `uv tool run bandit` with default paths; then retrying with only `UV_CACHE_DIR`.
+- **Solution:** Ran scanners with `UV_CACHE_DIR=/private/tmp/orbis-uv-cache` and `UV_TOOL_DIR=/private/tmp/orbis-uv-tools`, then allowed network access for package download. `pip-audit` returned no known vulnerabilities and Bandit returned no findings for `backend/app`.

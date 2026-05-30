@@ -131,4 +131,4 @@ async def _run_worker_failure_test() -> None:
     assert result.status == "completed"
     assert len(result.worker_results) == 4
     assert any(log.agent_id == "builder" and log.status == "failed" for log in logs)
-    assert "builder exploded" in result.worker_results[2].output
+    assert result.worker_results[2].output == "Builder failed to complete this step."

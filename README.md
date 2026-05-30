@@ -119,12 +119,14 @@ flowchart TB
 ```bash
 cd backend
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
 The backend starts on `http://127.0.0.1:8000` by default.
+
+`backend/requirements.txt` remains the human-edited dependency policy file. `backend/requirements.lock` pins resolved versions for reproducible installs.
 
 ### Frontend
 
@@ -142,10 +144,16 @@ The Vite dev server usually starts on `http://127.0.0.1:5173` or the next availa
 Set the OpenRouter values in `backend/.env`:
 
 ```bash
+APP_ENV=development
+ORBIS_API_TOKEN=change_me_for_shared_or_production_access
+METRICS_API_TOKEN=
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+CORS_ALLOW_CREDENTIALS=false
 ```
+
+When `ORBIS_API_TOKEN` is set, protected API calls must send `Authorization: Bearer <token>`. In production, `APP_ENV=production` requires this token and rejects local CORS origins.
 
 Useful runtime controls:
 
@@ -170,12 +178,14 @@ DATABASE_SSL=require
 DATABASE_POOL_SIZE=3
 DATABASE_MAX_OVERFLOW=2
 DATABASE_POOL_TIMEOUT_SECONDS=10
-DATABASE_AUTO_CREATE_TABLES=true
+DATABASE_AUTO_CREATE_TABLES=false
 ```
 
 If your database password contains reserved URL characters, URL-encode it before placing it in the connection string.
 
-For production schema management, prefer Alembic:
+`DATABASE_SSL=require` uses certificate verification by default. Use `DATABASE_SSL=insecure-require` only when you explicitly accept the risk for a local/provider certificate edge case.
+
+For schema management, use Alembic:
 
 ```bash
 cd backend
@@ -197,7 +207,7 @@ Main persisted entities:
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Service, provider, database, and model health. |
-| `GET` | `/metrics` | Prometheus-style metrics. |
+| `GET` | `/metrics` | Prometheus-style metrics, protected when a metrics/API token is configured. |
 | `GET` | `/api/agents` | Default supervisor-worker graph. |
 | `GET` / `PUT` | `/api/agent-profiles` | Agent Studio profile configuration. |
 | `GET` | `/api/templates` | Workflow template presets. |
@@ -210,6 +220,8 @@ Main persisted entities:
 | `POST` | `/api/runs/{run_id}/rerun/worker/{worker_id}` | Rerun one worker result. |
 | `POST` | `/api/runs/{run_id}/rerun/synthesis` | Rerun only the final synthesis. |
 | `POST` | `/api/evaluations/compare` | Score one or more runs with a lightweight rubric. |
+
+All state-changing endpoints and run/history/memory/profile details are protected when `ORBIS_API_TOKEN` is configured. Keep `/health` public for uptime checks.
 
 ## Validation
 

@@ -1,13 +1,20 @@
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
 AgentKind = Literal["supervisor", "worker"]
+WorkerId = Literal["researcher", "strategist", "builder", "reviewer"]
 WorkflowLogStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 WorkflowRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 OutputFormat = Literal["markdown", "json", "checklist", "table", "roadmap", "prd", "test_plan"]
 ToolCallStatus = Literal["running", "completed", "failed"]
+Identifier = Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")]
+NameText = Annotated[str, Field(min_length=1, max_length=120)]
+ShortText = Annotated[str, Field(min_length=1, max_length=600)]
+MediumText = Annotated[str, Field(min_length=1, max_length=1200)]
+LongText = Annotated[str, Field(min_length=1, max_length=6000)]
 
 
 class AgentNode(BaseModel):
@@ -32,44 +39,44 @@ class AgentGraphResponse(BaseModel):
 
 
 class DelegationItem(BaseModel):
-    worker_id: str
-    objective: str
-    expected_output: str
+    worker_id: WorkerId
+    objective: ShortText
+    expected_output: ShortText
     enabled: bool = True
 
 
 class WorkerResult(BaseModel):
-    worker_id: str
-    worker_name: str
-    objective: str
+    worker_id: WorkerId
+    worker_name: NameText
+    objective: ShortText
     output: str
 
 
 class AgentProfile(BaseModel):
-    id: str
-    name: str
-    role: str
-    goal: str
-    system_prompt: str = ""
-    model: str = ""
+    id: WorkerId
+    name: NameText
+    role: NameText
+    goal: MediumText
+    system_prompt: str = Field(default="", max_length=4000)
+    model: str = Field(default="", max_length=160)
     temperature: float = Field(default=0.3, ge=0, le=2)
     max_tokens: int = Field(default=900, ge=128, le=8000)
     enabled: bool = True
 
 
 class WorkflowTemplate(BaseModel):
-    id: str
-    name: str
-    description: str
-    task_prompt: str
+    id: Identifier
+    name: NameText
+    description: MediumText
+    task_prompt: LongText
     output_format: OutputFormat = "markdown"
 
 
 class MemoryItem(BaseModel):
-    id: str
-    title: str
-    category: str = "general"
-    content: str
+    id: str = Field(min_length=1, max_length=80)
+    title: NameText
+    category: str = Field(default="general", min_length=1, max_length=64)
+    content: LongText
     enabled: bool = True
     created_at: str = ""
 
@@ -82,50 +89,50 @@ class MemoryCreateRequest(BaseModel):
 
 
 class ToolCall(BaseModel):
-    id: str
-    run_id: str
-    tool_name: str
+    id: str = Field(min_length=1, max_length=80)
+    run_id: str = Field(min_length=1, max_length=80)
+    tool_name: str = Field(min_length=1, max_length=80)
     status: ToolCallStatus
-    input: str
-    output: str
+    input: str = Field(max_length=2000)
+    output: str = Field(max_length=6000)
     created_at: str
 
 
 class EvaluationResult(BaseModel):
-    id: str
-    run_id: str
-    rubric: str
+    id: str = Field(min_length=1, max_length=80)
+    run_id: str = Field(min_length=1, max_length=80)
+    rubric: str = Field(min_length=1, max_length=600)
     completeness: int = Field(ge=0, le=100)
     actionability: int = Field(ge=0, le=100)
     hallucination_risk: int = Field(ge=0, le=100)
     overall: int = Field(ge=0, le=100)
-    notes: str
+    notes: str = Field(max_length=2000)
     created_at: str
 
 
 class WorkflowLog(BaseModel):
-    run_id: str
+    run_id: str = Field(min_length=1, max_length=80)
     created_at: str
-    agent_id: str
-    agent_name: str
+    agent_id: str = Field(min_length=1, max_length=80)
+    agent_name: NameText
     status: WorkflowLogStatus
-    message: str
+    message: str = Field(min_length=1, max_length=2000)
 
 
 class PlanRequest(BaseModel):
     task: str = Field(min_length=3, max_length=4000)
-    memory_ids: list[str] = Field(default_factory=list)
-    agent_profiles: list[AgentProfile] = Field(default_factory=list)
+    memory_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    agent_profiles: list[AgentProfile] = Field(default_factory=list, max_length=4)
 
 
 class RunRequest(PlanRequest):
-    plan: list[DelegationItem] | None = None
+    plan: list[DelegationItem] | None = Field(default=None, max_length=4)
     output_format: OutputFormat = "markdown"
     enable_review_phase: bool = False
 
 
 class WorkflowRun(BaseModel):
-    run_id: str
+    run_id: str = Field(min_length=1, max_length=80)
     task: str
     model: str
     status: WorkflowRunStatus = "completed"
@@ -141,7 +148,7 @@ class WorkflowRun(BaseModel):
 
 
 class WorkflowRunSummary(BaseModel):
-    run_id: str
+    run_id: str = Field(min_length=1, max_length=80)
     task: str
     model: str
     status: str
@@ -154,20 +161,24 @@ class RunDetail(WorkflowRun):
 
 
 class RerunWorkerRequest(BaseModel):
-    objective: str | None = None
-    expected_output: str | None = None
-    memory_ids: list[str] = Field(default_factory=list)
-    agent_profiles: list[AgentProfile] = Field(default_factory=list)
+    objective: ShortText | None = None
+    expected_output: ShortText | None = None
+    memory_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    agent_profiles: list[AgentProfile] = Field(default_factory=list, max_length=4)
 
 
 class RerunSynthesisRequest(BaseModel):
     output_format: OutputFormat = "markdown"
-    memory_ids: list[str] = Field(default_factory=list)
+    memory_ids: list[UUID] = Field(default_factory=list, max_length=25)
 
 
 class EvaluationCompareRequest(BaseModel):
-    run_ids: list[str] = Field(default_factory=list)
-    rubric: str = Field(default="Completeness, actionability, risk awareness")
+    run_ids: list[UUID] = Field(default_factory=list, min_length=1, max_length=10)
+    rubric: str = Field(
+        default="Completeness, actionability, risk awareness",
+        min_length=3,
+        max_length=600,
+    )
 
 
 class HealthResponse(BaseModel):

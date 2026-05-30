@@ -1,17 +1,23 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping
 from threading import Lock
 from time import perf_counter
 
 
 LabelSet = tuple[tuple[str, str], ...]
+DEFAULT_MAX_HISTOGRAM_SAMPLES = 1000
 
 
 class MetricsRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        max_histogram_samples: int = DEFAULT_MAX_HISTOGRAM_SAMPLES,
+    ) -> None:
         self._lock = Lock()
         self._counters: defaultdict[tuple[str, LabelSet], float] = defaultdict(float)
-        self._histograms: defaultdict[tuple[str, LabelSet], list[float]] = defaultdict(list)
+        self._histograms: defaultdict[tuple[str, LabelSet], deque[float]] = defaultdict(
+            lambda: deque(maxlen=max_histogram_samples)
+        )
 
     def increment(
         self,
@@ -37,7 +43,9 @@ class MetricsRegistry:
         lines: list[str] = []
         with self._lock:
             counters = dict(self._counters)
-            histograms = {key: values[:] for key, values in self._histograms.items()}
+            histograms = {
+                key: list(values) for key, values in self._histograms.items()
+            }
 
         for (name, labels), value in sorted(counters.items()):
             lines.append(f"{name}{_format_labels(labels)} {value:g}")

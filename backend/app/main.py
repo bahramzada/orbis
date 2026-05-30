@@ -1,17 +1,20 @@
 from contextlib import asynccontextmanager, suppress
 import asyncio
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 import json
 import logging
+import secrets
 from time import perf_counter
-from typing import AsyncIterator
-from uuid import uuid4
+from typing import AsyncIterator, cast
+from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from httpx import HTTPError
+from starlette import status
 
 from app.agents import AgentOrchestrator, AgentRegistry, WORKERS
 from app.config import get_settings
@@ -33,6 +36,7 @@ from app.schemas import (
     RunDetail,
     RunRequest,
     ToolCall,
+    WorkerId,
     WorkflowTemplate,
     WorkflowLog,
     WorkflowRun,
@@ -42,12 +46,14 @@ from app.schemas import (
 
 
 registry = AgentRegistry()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level.upper())
+    settings.validate_security_settings()
     client = OpenRouterClient(settings)
     database = DatabaseRepository(settings)
     await database.init()
@@ -57,8 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.agent_profiles = await _load_agent_profiles(database)
     app.state.memories = await database.list_memories()
     app.state.templates = await _load_templates(database)
-    app.state.recent_runs = {}
-    app.state.evaluations = {}
+    app.state.recent_runs = OrderedDict()
+    app.state.evaluations = OrderedDict()
     yield
     await client.close()
     await database.close()
@@ -70,9 +76,9 @@ settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -111,6 +117,42 @@ def get_database() -> DatabaseRepository:
     return app.state.database
 
 
+class StreamError:
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+
+
+def require_api_token(authorization: str = Header(default="")) -> None:
+    expected = settings.orbis_api_token.strip()
+    if not expected and not settings.is_production:
+        return
+    if not expected or not _is_authorized(authorization, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized.",
+        )
+
+
+def require_metrics_token(authorization: str = Header(default="")) -> None:
+    expected = settings.effective_metrics_token
+    if not expected and not settings.is_production:
+        return
+    if not expected or not _is_authorized(authorization, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized.",
+        )
+
+
+def _is_authorized(authorization: str, expected_token: str) -> bool:
+    scheme, _, token = authorization.partition(" ")
+    return (
+        scheme.lower() == "bearer"
+        and bool(token)
+        and secrets.compare_digest(token, expected_token)
+    )
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health(
     client: OpenRouterClient = Depends(get_client),
@@ -125,7 +167,7 @@ async def health(
 
 
 @app.get("/metrics")
-async def get_metrics() -> PlainTextResponse:
+async def get_metrics(_: None = Depends(require_metrics_token)) -> PlainTextResponse:
     if not settings.enable_metrics:
         raise HTTPException(status_code=404, detail="Metrics are disabled.")
     return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain")
@@ -139,6 +181,7 @@ async def get_agents() -> AgentGraphResponse:
 @app.post("/api/runs", response_model=WorkflowRun)
 async def run_workflow(
     payload: RunRequest,
+    _: None = Depends(require_api_token),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -164,14 +207,20 @@ async def run_workflow(
         _remember_run(result)
         return result
     except HTTPError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("Workflow provider request failed.")
+        raise HTTPException(
+            status_code=502,
+            detail="Workflow provider request failed.",
+        ) from exc
     except (RuntimeError, ValueError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("Workflow execution failed.")
+        raise HTTPException(status_code=500, detail="Workflow failed.") from exc
 
 
 @app.get("/api/runs", response_model=list[WorkflowRunSummary])
 async def list_workflow_runs(
     limit: int = Query(default=20, ge=1, le=100),
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[WorkflowRunSummary]:
     return await database.list_workflow_runs(limit)
@@ -179,14 +228,16 @@ async def list_workflow_runs(
 
 @app.get("/api/runs/{run_id}", response_model=RunDetail)
 async def get_run_detail(
-    run_id: str,
+    run_id: UUID,
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> RunDetail:
-    detail = await database.get_workflow_run(run_id)
+    run_id_text = str(run_id)
+    detail = await database.get_workflow_run(run_id_text)
     if detail is not None:
         return _merge_cached_evaluations(detail)
 
-    cached = app.state.recent_runs.get(run_id)
+    cached = app.state.recent_runs.get(run_id_text)
     if cached is not None:
         return _merge_cached_evaluations(cached)
 
@@ -196,6 +247,7 @@ async def get_run_detail(
 @app.post("/api/plans", response_model=list[DelegationItem])
 async def preview_plan(
     payload: PlanRequest,
+    _: None = Depends(require_api_token),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -216,6 +268,7 @@ async def preview_plan(
 
 @app.get("/api/agent-profiles", response_model=list[AgentProfile])
 async def list_agent_profiles(
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AgentProfile]:
     profiles = await database.list_agent_profiles()
@@ -227,7 +280,8 @@ async def list_agent_profiles(
 
 @app.put("/api/agent-profiles", response_model=list[AgentProfile])
 async def save_agent_profiles(
-    profiles: list[AgentProfile],
+    profiles: list[AgentProfile] = Body(max_length=4),
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AgentProfile]:
     normalized = _profiles_or_defaults(profiles)
@@ -249,6 +303,7 @@ async def list_templates(
 
 @app.get("/api/memories", response_model=list[MemoryItem])
 async def list_memories(
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[MemoryItem]:
     memories = await database.list_memories()
@@ -260,18 +315,20 @@ async def list_memories(
 @app.post("/api/memories", response_model=MemoryItem)
 async def create_memory(
     payload: MemoryCreateRequest,
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> MemoryItem:
     item = await database.create_memory(str(uuid4()), payload)
-    app.state.memories = [item, *app.state.memories]
+    app.state.memories = [item, *app.state.memories][: settings.max_recent_runs]
     return item
 
 
 @app.post("/api/runs/{run_id}/rerun/worker/{worker_id}", response_model=RunDetail)
 async def rerun_worker(
-    run_id: str,
-    worker_id: str,
+    run_id: UUID,
+    worker_id: WorkerId,
     payload: RerunWorkerRequest,
+    _: None = Depends(require_api_token),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -282,7 +339,8 @@ async def rerun_worker(
             detail="OPENROUTER_API_KEY is not configured.",
         )
 
-    detail = await _get_existing_run(run_id, database)
+    run_id_text = str(run_id)
+    detail = await _get_existing_run(run_id_text, database)
     plan_item = next((item for item in detail.plan if item.worker_id == worker_id), None)
     if plan_item is None:
         raise HTTPException(status_code=404, detail="Worker was not found in this run.")
@@ -301,7 +359,7 @@ async def rerun_worker(
     )
     detail.worker_results = _replace_worker_result(detail.worker_results, result)
     await database.update_run_outputs(
-        run_id,
+        run_id_text,
         detail.worker_results,
         detail.final_answer,
         detail.output_format,
@@ -312,8 +370,9 @@ async def rerun_worker(
 
 @app.post("/api/runs/{run_id}/rerun/synthesis", response_model=RunDetail)
 async def rerun_synthesis(
-    run_id: str,
+    run_id: UUID,
     payload: RerunSynthesisRequest,
+    _: None = Depends(require_api_token),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -324,7 +383,8 @@ async def rerun_synthesis(
             detail="OPENROUTER_API_KEY is not configured.",
         )
 
-    detail = await _get_existing_run(run_id, database)
+    run_id_text = str(run_id)
+    detail = await _get_existing_run(run_id_text, database)
     detail.final_answer = await orchestrator.rerun_synthesis(
         detail.task,
         detail.worker_results,
@@ -333,7 +393,7 @@ async def rerun_synthesis(
     )
     detail.output_format = payload.output_format
     await database.update_run_outputs(
-        run_id,
+        run_id_text,
         detail.worker_results,
         detail.final_answer,
         detail.output_format,
@@ -345,14 +405,16 @@ async def rerun_synthesis(
 @app.post("/api/evaluations/compare", response_model=list[EvaluationResult])
 async def compare_evaluations(
     payload: EvaluationCompareRequest,
+    _: None = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[EvaluationResult]:
     results: list[EvaluationResult] = []
     for run_id in payload.run_ids:
-        detail = await _get_existing_run(run_id, database)
+        run_id_text = str(run_id)
+        detail = await _get_existing_run(run_id_text, database)
         evaluation = _evaluate_run(detail, payload.rubric)
         await database.save_evaluation(evaluation)
-        app.state.evaluations.setdefault(run_id, []).insert(0, evaluation)
+        _remember_evaluation(run_id_text, evaluation)
         results.append(evaluation)
     return results
 
@@ -360,6 +422,7 @@ async def compare_evaluations(
 @app.post("/api/runs/stream")
 async def stream_workflow(
     payload: RunRequest,
+    _: None = Depends(require_api_token),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -371,7 +434,7 @@ async def stream_workflow(
         )
 
     async def event_stream() -> AsyncIterator[str]:
-        queue: asyncio.Queue[WorkflowLog | ToolCall | WorkflowRun | Exception | None] = (
+        queue: asyncio.Queue[WorkflowLog | ToolCall | WorkflowRun | StreamError | None] = (
             asyncio.Queue()
         )
 
@@ -397,8 +460,9 @@ async def stream_workflow(
                 await database.save_workflow_run(result)
                 _remember_run(result)
                 await queue.put(result)
-            except Exception as exc:
-                await queue.put(exc)
+            except Exception:
+                logger.exception("Workflow stream failed.")
+                await queue.put(StreamError("Workflow failed."))
             finally:
                 await queue.put(None)
 
@@ -414,8 +478,8 @@ async def stream_workflow(
                     yield _json_line("tool_call", item.model_dump(mode="json"))
                 elif isinstance(item, WorkflowRun):
                     yield _json_line("result", item.model_dump(mode="json"))
-                else:
-                    yield _json_line("error", {"detail": str(item)})
+                elif isinstance(item, StreamError):
+                    yield _json_line("error", {"detail": item.detail})
         finally:
             if not run_task.done():
                 run_task.cancel()
@@ -442,7 +506,7 @@ async def _load_templates(database: DatabaseRepository) -> list[WorkflowTemplate
 def _default_agent_profiles() -> list[AgentProfile]:
     return [
         AgentProfile(
-            id=worker.id,
+            id=cast(WorkerId, worker.id),
             name=worker.name,
             role=worker.role,
             goal=worker.goal,
@@ -508,7 +572,7 @@ def _profiles_or_defaults(profiles: list[AgentProfile] | None) -> list[AgentProf
 
 
 async def _selected_memories(
-    memory_ids: list[str],
+    memory_ids: list[UUID],
     database: DatabaseRepository,
 ) -> list[MemoryItem]:
     if not memory_ids:
@@ -520,7 +584,7 @@ async def _selected_memories(
     else:
         memories = app.state.memories
 
-    selected = set(memory_ids)
+    selected = {str(memory_id) for memory_id in memory_ids}
     return [memory for memory in memories if memory.enabled and memory.id in selected]
 
 
@@ -528,6 +592,18 @@ def _remember_run(run: WorkflowRun | RunDetail) -> None:
     detail = RunDetail.model_validate(run.model_dump(mode="json"))
     detail.evaluations = app.state.evaluations.get(detail.run_id, detail.evaluations)
     app.state.recent_runs[detail.run_id] = detail
+    app.state.recent_runs.move_to_end(detail.run_id)
+    while len(app.state.recent_runs) > settings.max_recent_runs:
+        app.state.recent_runs.popitem(last=False)
+
+
+def _remember_evaluation(run_id: str, evaluation: EvaluationResult) -> None:
+    evaluations = app.state.evaluations.setdefault(run_id, [])
+    evaluations.insert(0, evaluation)
+    del evaluations[settings.max_evaluations_per_run :]
+    app.state.evaluations.move_to_end(run_id)
+    while len(app.state.evaluations) > settings.max_recent_runs:
+        app.state.evaluations.popitem(last=False)
 
 
 async def _get_existing_run(

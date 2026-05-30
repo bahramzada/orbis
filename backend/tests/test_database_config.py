@@ -1,3 +1,5 @@
+import ssl
+
 from app.config import Settings
 from app.db import DatabaseRepository, _ssl_config, metadata
 
@@ -33,9 +35,18 @@ def test_placeholder_password_keeps_database_disabled() -> None:
     assert settings.is_database_configured is False
 
 
-def test_database_ssl_setting_is_mapped_to_asyncpg_bool() -> None:
-    assert _ssl_config("require") is not False
-    assert _ssl_config("true") is not False
+def test_database_ssl_setting_verifies_certificates_by_default() -> None:
+    require_context = _ssl_config("require")
+    true_context = _ssl_config("true")
+    insecure_context = _ssl_config("insecure-require")
+
+    assert isinstance(require_context, ssl.SSLContext)
+    assert isinstance(true_context, ssl.SSLContext)
+    assert require_context.verify_mode == ssl.CERT_REQUIRED
+    assert require_context.check_hostname is True
+    assert isinstance(insecure_context, ssl.SSLContext)
+    assert insecure_context.verify_mode == ssl.CERT_NONE
+    assert insecure_context.check_hostname is False
     assert _ssl_config("disable") is False
 
 
@@ -63,6 +74,7 @@ def test_pool_settings_are_configurable() -> None:
         DATABASE_POOL_SIZE=4,
         DATABASE_MAX_OVERFLOW=1,
         DATABASE_POOL_TIMEOUT_SECONDS=7,
+        DATABASE_SSL="require",
     )
 
     repository = DatabaseRepository(settings)
