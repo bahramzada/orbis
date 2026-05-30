@@ -136,7 +136,15 @@ class Settings(BaseSettings):
             raise RuntimeError("ORBIS_API_TOKEN is required in production.")
         if self.database_auto_create_tables:
             raise RuntimeError("DATABASE_AUTO_CREATE_TABLES must be false in production.")
-        if self.database_ssl.strip().lower() in {"0", "false", "no", "off", "disable", "insecure-require"}:
+        if self.database_ssl.strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+            "disable",
+            "disabled",
+            "insecure-require",
+        }:
             raise RuntimeError("Verified DATABASE_SSL is required in production.")
         if any(
             marker in origin

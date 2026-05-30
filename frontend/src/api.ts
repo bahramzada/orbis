@@ -13,8 +13,10 @@ import type {
   WorkflowTemplate
 } from "./types";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-const apiToken = import.meta.env.VITE_ORBIS_API_TOKEN ?? "";
+const runtimeConfig = window.__ORBIS_CONFIG__ ?? {};
+const apiBaseUrl =
+  runtimeConfig.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const apiToken = runtimeConfig.apiToken || import.meta.env.VITE_ORBIS_API_TOKEN || "";
 
 function authHeaders(): HeadersInit {
   return apiToken ? { Authorization: `Bearer ${apiToken}` } : {};

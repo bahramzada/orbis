@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import logging
 import ssl
 from typing import TypeAlias
 from uuid import UUID
@@ -39,6 +40,7 @@ from app.schemas import (
 )
 
 SslConfig: TypeAlias = bool | ssl.SSLContext
+logger = logging.getLogger(__name__)
 
 
 metadata = MetaData()
@@ -184,8 +186,11 @@ class DatabaseRepository:
         if not self._settings.database_auto_create_tables:
             return
 
-        async with self._engine.begin() as connection:
-            await connection.run_sync(metadata.create_all)
+        try:
+            async with self._engine.begin() as connection:
+                await connection.run_sync(metadata.create_all)
+        except Exception:
+            self._disable_after_error("init")
 
     async def close(self) -> None:
         if self._engine is not None:
@@ -256,6 +261,8 @@ class DatabaseRepository:
                             for log in run.logs
                         ],
                     )
+        except Exception:
+            self._disable_after_error("save_run")
         finally:
             db_timer.stop()
 
@@ -280,6 +287,9 @@ class DatabaseRepository:
 
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).mappings().all()
+        except Exception:
+            self._disable_after_error("list_runs")
+            return []
         finally:
             db_timer.stop()
 
@@ -299,28 +309,32 @@ class DatabaseRepository:
         if self._engine is None:
             return None
 
-        async with self._engine.connect() as connection:
-            row = (
-                await connection.execute(
-                    select(workflow_runs).where(workflow_runs.c.run_id == UUID(run_id))
-                )
-            ).mappings().first()
-            if row is None:
-                return None
-            log_rows = (
-                await connection.execute(
-                    select(workflow_logs)
-                    .where(workflow_logs.c.run_id == UUID(run_id))
-                    .order_by(workflow_logs.c.created_at.asc())
-                )
-            ).mappings().all()
-            evaluation_rows = (
-                await connection.execute(
-                    select(run_evaluations)
-                    .where(run_evaluations.c.run_id == UUID(run_id))
-                    .order_by(run_evaluations.c.created_at.desc())
-                )
-            ).mappings().all()
+        try:
+            async with self._engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        select(workflow_runs).where(workflow_runs.c.run_id == UUID(run_id))
+                    )
+                ).mappings().first()
+                if row is None:
+                    return None
+                log_rows = (
+                    await connection.execute(
+                        select(workflow_logs)
+                        .where(workflow_logs.c.run_id == UUID(run_id))
+                        .order_by(workflow_logs.c.created_at.asc())
+                    )
+                ).mappings().all()
+                evaluation_rows = (
+                    await connection.execute(
+                        select(run_evaluations)
+                        .where(run_evaluations.c.run_id == UUID(run_id))
+                        .order_by(run_evaluations.c.created_at.desc())
+                    )
+                ).mappings().all()
+        except Exception:
+            self._disable_after_error("get_run")
+            return None
 
         return RunDetail(
             run_id=str(row["run_id"]),
@@ -372,47 +386,61 @@ class DatabaseRepository:
         if self._engine is None:
             return
 
-        async with self._engine.begin() as connection:
-            await connection.execute(
-                update(workflow_runs)
-                .where(workflow_runs.c.run_id == UUID(run_id))
-                .values(
-                    worker_results=[
-                        result.model_dump(mode="json") for result in worker_results
-                    ],
-                    final_answer=final_answer,
-                    output_format=output_format,
-                    completed_at=_now(),
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    update(workflow_runs)
+                    .where(workflow_runs.c.run_id == UUID(run_id))
+                    .values(
+                        worker_results=[
+                            result.model_dump(mode="json") for result in worker_results
+                        ],
+                        final_answer=final_answer,
+                        output_format=output_format,
+                        completed_at=_now(),
+                    )
                 )
-            )
+        except Exception:
+            self._disable_after_error("update_run")
 
     async def list_agent_profiles(self) -> list[AgentProfile]:
         if self._engine is None:
             return []
-        async with self._engine.connect() as connection:
-            rows = (await connection.execute(select(agent_profiles))).mappings().all()
+        try:
+            async with self._engine.connect() as connection:
+                rows = (await connection.execute(select(agent_profiles))).mappings().all()
+        except Exception:
+            self._disable_after_error("list_agent_profiles")
+            return []
         return [AgentProfile.model_validate(dict(row)) for row in rows]
 
     async def save_agent_profiles(self, profiles: list[AgentProfile]) -> None:
         if self._engine is None:
             return
-        async with self._engine.begin() as connection:
-            await connection.execute(delete(agent_profiles))
-            if profiles:
-                await connection.execute(
-                    insert(agent_profiles),
-                    [profile.model_dump(mode="json") for profile in profiles],
-                )
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(delete(agent_profiles))
+                if profiles:
+                    await connection.execute(
+                        insert(agent_profiles),
+                        [profile.model_dump(mode="json") for profile in profiles],
+                    )
+        except Exception:
+            self._disable_after_error("save_agent_profiles")
 
     async def list_memories(self) -> list[MemoryItem]:
         if self._engine is None:
             return []
-        async with self._engine.connect() as connection:
-            rows = (
-                await connection.execute(
-                    select(memory_items).order_by(memory_items.c.created_at.desc())
-                )
-            ).mappings().all()
+        try:
+            async with self._engine.connect() as connection:
+                rows = (
+                    await connection.execute(
+                        select(memory_items).order_by(memory_items.c.created_at.desc())
+                    )
+                ).mappings().all()
+        except Exception:
+            self._disable_after_error("list_memories")
+            return []
         return [
             MemoryItem(
                 id=row["id"],
@@ -437,15 +465,24 @@ class DatabaseRepository:
         if self._engine is not None:
             values = item.model_dump(mode="json")
             values["created_at"] = _parse_datetime(item.created_at)
-            async with self._engine.begin() as connection:
-                await connection.execute(insert(memory_items).values(**values))
+            try:
+                async with self._engine.begin() as connection:
+                    await connection.execute(insert(memory_items).values(**values))
+            except Exception:
+                self._disable_after_error("create_memory")
         return item
 
     async def list_templates(self) -> list[WorkflowTemplate]:
         if self._engine is None:
             return []
-        async with self._engine.connect() as connection:
-            rows = (await connection.execute(select(workflow_templates))).mappings().all()
+        try:
+            async with self._engine.connect() as connection:
+                rows = (
+                    await connection.execute(select(workflow_templates))
+                ).mappings().all()
+        except Exception:
+            self._disable_after_error("list_templates")
+            return []
         return [WorkflowTemplate.model_validate(dict(row)) for row in rows]
 
     async def save_evaluation(self, evaluation: EvaluationResult) -> None:
@@ -454,8 +491,18 @@ class DatabaseRepository:
         values = evaluation.model_dump(mode="json")
         values["run_id"] = UUID(evaluation.run_id)
         values["created_at"] = _parse_datetime(evaluation.created_at)
-        async with self._engine.begin() as connection:
-            await connection.execute(insert(run_evaluations).values(**values))
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(insert(run_evaluations).values(**values))
+        except Exception:
+            self._disable_after_error("save_evaluation")
+
+    def _disable_after_error(self, operation: str) -> None:
+        logger.warning(
+            "Database operation failed; persistence is disabled for this process.",
+            extra={"operation": operation},
+        )
+        self._engine = None
 
 
 def _now() -> datetime:
@@ -471,7 +518,7 @@ def _parse_datetime(value: str) -> datetime:
 
 def _ssl_config(value: str) -> SslConfig:
     normalized = value.strip().lower()
-    if normalized in {"0", "false", "no", "off", "disable"}:
+    if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
         return False
     if normalized in {
         "1",

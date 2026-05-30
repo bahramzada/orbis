@@ -49,6 +49,13 @@
 - **Failed Attempts:** Passing `DATABASE_SSL=require` directly as asyncpg `ssl` config.
 - **Solution:** Mapped `DATABASE_SSL=require` to a default verified SSL context for production safety. Use `DATABASE_SSL=insecure-require` only for explicitly accepted local/provider certificate edge cases.
 
+## Optional Database Startup Resilience
+
+- **Context/Component:** Backend startup, Supabase/Postgres persistence
+- **Error:** Startup failed when `DATABASE_SSL=disabled` was used, then failed again when the configured database host could not be resolved.
+- **Failed Attempts:** Supporting only `DATABASE_SSL=disable` and letting optional DB reads run during lifespan without a fallback path.
+- **Solution:** Added `DATABASE_SSL=disabled` as a local-development alias and made optional DB operations disable persistence for the current process when the database is unreachable, allowing the app to continue with in-memory defaults.
+
 ## Completed Workflow Kept Showing Spinning Log Rows
 
 - **Context/Component:** Frontend agent activity log

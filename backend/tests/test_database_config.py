@@ -1,4 +1,8 @@
+import asyncio
 import ssl
+from typing import cast
+
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.config import Settings
 from app.db import DatabaseRepository, _ssl_config, metadata
@@ -48,6 +52,7 @@ def test_database_ssl_setting_verifies_certificates_by_default() -> None:
     assert insecure_context.verify_mode == ssl.CERT_NONE
     assert insecure_context.check_hostname is False
     assert _ssl_config("disable") is False
+    assert _ssl_config("disabled") is False
 
 
 def test_database_performance_indexes_are_declared() -> None:
@@ -90,3 +95,19 @@ def test_runtime_performance_settings_have_safe_defaults() -> None:
     assert settings.openrouter_max_connections >= settings.openrouter_max_keepalive
     assert settings.openrouter_retry_attempts >= 1
     assert settings.database_pool_size >= 1
+
+
+def test_database_read_failure_disables_optional_persistence() -> None:
+    asyncio.run(_run_database_read_failure_test())
+
+
+async def _run_database_read_failure_test() -> None:
+    class BrokenEngine:
+        def connect(self) -> None:
+            raise OSError("database unavailable")
+
+    repository = DatabaseRepository(Settings(DATABASE_URL=""))
+    repository._engine = cast(AsyncEngine, BrokenEngine())
+
+    assert await repository.list_agent_profiles() == []
+    assert repository.is_configured is False

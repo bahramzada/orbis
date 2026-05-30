@@ -139,6 +139,17 @@ npm run dev
 
 The Vite dev server usually starts on `http://127.0.0.1:5173` or the next available port.
 
+## Coolify Deployment
+
+Deploy backend and frontend as separate Coolify apps.
+
+| App | Base Directory | Dockerfile | Port | Health |
+| --- | --- | --- | --- | --- |
+| Backend API | `backend` | `backend/Dockerfile` | `8000` | `/health` |
+| Frontend UI | `frontend` | `frontend/Dockerfile` | `80` | `/` |
+
+Use [COOLIFY_DEPLOYMENT.md](/Users/raullte/Desktop/Projects/Orbis/COOLIFY_DEPLOYMENT.md) for the exact environment variables and first-run migration command.
+
 ## Configuration
 
 Set the OpenRouter values in `backend/.env`:

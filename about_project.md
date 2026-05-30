@@ -7,6 +7,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 ## Architecture Overview
 
 - Backend and frontend are separate applications.
+- Backend and frontend can be deployed as separate Coolify Dockerfile services.
 - Backend owns configuration, OpenRouter API access, agent orchestration, and API contracts.
 - Backend exposes `/health`, `/api/agents`, `/api/runs`, `/api/runs/stream`, plan preview, agent profile, memory, template, rerun, and evaluation endpoints.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
@@ -32,8 +33,10 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 ## Project Structure
 
 - `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, prompt builders, logged agent orchestration, capability endpoints, API schemas
+- `backend/Dockerfile`: Coolify-ready backend API container
 - `backend/migrations`: Alembic migrations for workflow persistence tables and indexes
 - `backend/tests`: backend test coverage
 - `backend/requirements.lock`: pinned backend dependency set for reproducible production installs
 - `frontend/src`: React application shell, API client, shared constants/types, and styling
 - `frontend/src/components`: modular dashboard components for graph views, capability controls, activity logs, run summaries, and Markdown rendering
+- `frontend/Dockerfile`: Coolify-ready static frontend container with runtime `/config.js`
