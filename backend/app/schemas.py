@@ -186,4 +186,5 @@ class HealthResponse(BaseModel):
     openrouter_configured: bool
     database_configured: bool
     database_status: str = "disabled"
+    database_error_code: str = ""
     model: str

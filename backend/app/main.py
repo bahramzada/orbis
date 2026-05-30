@@ -17,8 +17,8 @@ from httpx import HTTPError
 from starlette import status
 
 from app.agents import AgentOrchestrator, AgentRegistry, WORKERS
-from app.config import get_settings
-from app.db import DatabaseRepository
+from app.config import Settings, get_settings
+from app.db import DatabaseRepository, SCHEMA_INCOMPLETE_ERROR
 from app.migration_runner import run_database_migrations
 from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
@@ -56,13 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(level=settings.log_level.upper())
     settings.validate_security_settings()
     client = OpenRouterClient(settings)
-    if settings.database_auto_migrate and settings.is_database_configured:
-        try:
-            await run_database_migrations(settings)
-        except Exception:
-            logger.exception("Database auto migration failed.")
-    database = DatabaseRepository(settings)
-    await database.init()
+    database = await _initialize_database(settings)
     app.state.openrouter_client = client
     app.state.database = database
     app.state.orchestrator = AgentOrchestrator(client, registry, settings)
@@ -123,6 +117,44 @@ def get_database() -> DatabaseRepository:
     return app.state.database
 
 
+async def _initialize_database(settings: Settings) -> DatabaseRepository:
+    database = DatabaseRepository(settings)
+    if not settings.is_database_configured:
+        return database
+
+    if settings.database_auto_migrate:
+        await _run_database_migrations(settings, "startup")
+
+    await database.init()
+    if database.status == "ready":
+        return database
+
+    if database.error_code in {SCHEMA_INCOMPLETE_ERROR, "migration_conflict"}:
+        logger.warning(
+            "Database schema is not ready after first check; retrying migration. "
+            "code=%s",
+            database.error_code,
+        )
+        await _run_database_migrations(settings, "recovery")
+        await database.close()
+        database = DatabaseRepository(settings)
+        await database.init()
+
+    return database
+
+
+async def _run_database_migrations(settings: Settings, phase: str) -> None:
+    try:
+        await run_database_migrations(settings)
+    except Exception as exc:
+        logger.warning(
+            "Database migration failed. phase=%s error_class=%s",
+            phase,
+            exc.__class__.__name__,
+        )
+        logger.debug("Database migration traceback.", exc_info=True)
+
+
 class StreamError:
     def __init__(self, detail: str) -> None:
         self.detail = detail
@@ -169,6 +201,7 @@ async def health(
         openrouter_configured=client.is_configured,
         database_configured=database.is_persistence_configured,
         database_status=database.status,
+        database_error_code=database.error_code,
         model=client.model,
     )
 

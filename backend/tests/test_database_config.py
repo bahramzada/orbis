@@ -151,4 +151,25 @@ async def _run_database_read_failure_test() -> None:
     assert repository.is_persistence_configured is True
     assert repository.is_configured is False
     assert repository.status == "unavailable"
+    assert repository.error_code == "connection_failed"
     assert "database unavailable" in repository.last_error
+
+
+def test_migrations_are_safe_for_partial_bootstrap() -> None:
+    first_migration = (
+        "backend/migrations/versions/20260530_0001_create_workflow_tables.py"
+    )
+    second_migration = (
+        "backend/migrations/versions/20260530_0002_ai_capability_tables.py"
+    )
+
+    with open(first_migration, encoding="utf-8") as migration_file:
+        first_source = migration_file.read()
+    with open(second_migration, encoding="utf-8") as migration_file:
+        second_source = migration_file.read()
+
+    assert "_table_exists" in first_source
+    assert "CREATE INDEX IF NOT EXISTS" in first_source
+    assert "_table_exists" in second_source
+    assert "_add_column_if_missing" in second_source
+    assert "CREATE INDEX IF NOT EXISTS" in second_source

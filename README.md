@@ -233,6 +233,8 @@ Main persisted entities:
 | `POST` | `/api/runs/{run_id}/rerun/synthesis` | Rerun only the final synthesis. |
 | `POST` | `/api/evaluations/compare` | Score one or more runs with a lightweight rubric. |
 
+`/health` includes `database_status` and a non-secret `database_error_code` so deployments can distinguish disabled persistence from connection, schema, SSL, DNS, or auth failures.
+
 All state-changing endpoints and run/history/memory/profile details are protected when `ORBIS_API_TOKEN` is configured. Keep `/health` public for uptime checks.
 
 ## Validation

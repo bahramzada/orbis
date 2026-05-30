@@ -43,6 +43,7 @@ from app.schemas import (
 
 SslConfig: TypeAlias = bool | ssl.SSLContext
 logger = logging.getLogger(__name__)
+SCHEMA_INCOMPLETE_ERROR = "schema_incomplete"
 
 REQUIRED_TABLE_NAMES = frozenset(
     {
@@ -56,6 +57,10 @@ REQUIRED_TABLE_NAMES = frozenset(
         "alembic_version",
     }
 )
+
+
+class DatabaseSchemaError(RuntimeError):
+    pass
 
 
 metadata = MetaData()
@@ -179,6 +184,7 @@ class DatabaseRepository:
         self._settings = settings
         self._engine: AsyncEngine | None = None
         self._last_error = ""
+        self._last_error_code = ""
         if settings.is_database_configured:
             self._engine = create_async_engine(
                 settings.sqlalchemy_database_url,
@@ -211,6 +217,10 @@ class DatabaseRepository:
     @property
     def last_error(self) -> str:
         return self._last_error
+
+    @property
+    def error_code(self) -> str:
+        return self._last_error_code
 
     async def init(self) -> None:
         if self._engine is None:
@@ -542,7 +552,7 @@ class DatabaseRepository:
         missing_tables = sorted(REQUIRED_TABLE_NAMES - table_names)
         if missing_tables:
             missing = ", ".join(missing_tables)
-            raise RuntimeError(
+            raise DatabaseSchemaError(
                 "Database schema is incomplete. "
                 f"Missing tables: {missing}. "
                 "Keep DATABASE_AUTO_MIGRATE=true for automatic startup migrations, "
@@ -551,10 +561,12 @@ class DatabaseRepository:
 
     def _disable_after_error(self, operation: str, exc: Exception) -> None:
         self._last_error = _safe_db_error(exc)
+        self._last_error_code = _classify_db_error(exc)
         logger.warning(
             "Database operation failed; persistence is disabled for this process. "
-            "operation=%s error=%s",
+            "operation=%s code=%s error=%s",
             operation,
+            self._last_error_code,
             self._last_error,
         )
         self._engine = None
@@ -576,6 +588,26 @@ def _safe_db_error(exc: Exception) -> str:
     if len(message) > 280:
         message = f"{message[:277]}..."
     return f"{exc.__class__.__name__}: {message}"
+
+
+def _classify_db_error(exc: Exception) -> str:
+    if isinstance(exc, DatabaseSchemaError):
+        return SCHEMA_INCOMPLETE_ERROR
+
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    if "password authentication failed" in text or "invalidpassword" in text:
+        return "auth_failed"
+    if "ssl" in text or "certificate" in text:
+        return "ssl_failed"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "gaierror" in text or "name or service not known" in text or "nodename" in text:
+        return "dns_failed"
+    if "connection refused" in text:
+        return "connection_refused"
+    if "already exists" in text or "duplicatetable" in text:
+        return "migration_conflict"
+    return "connection_failed"
 
 
 def _ssl_config(value: str) -> SslConfig:

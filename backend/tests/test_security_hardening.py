@@ -68,6 +68,7 @@ def test_health_reports_database_status() -> None:
 
     assert response.status_code == 200
     assert response.json()["database_status"] == "disabled"
+    assert response.json()["database_error_code"] == ""
 
 
 def test_run_detail_rejects_invalid_uuid_path() -> None:
