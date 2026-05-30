@@ -190,6 +190,7 @@ DATABASE_POOL_SIZE=3
 DATABASE_MAX_OVERFLOW=2
 DATABASE_POOL_TIMEOUT_SECONDS=10
 DATABASE_AUTO_CREATE_TABLES=false
+DATABASE_AUTO_MIGRATE=false
 ```
 
 If your database password contains reserved URL characters, URL-encode it before placing it in the connection string.
@@ -202,6 +203,8 @@ For schema management, use Alembic:
 cd backend
 alembic upgrade head
 ```
+
+For Coolify-style deployments, set `DATABASE_AUTO_MIGRATE=true` on the backend app if you want the API container to apply Alembic migrations automatically during startup.
 
 Main persisted entities:
 

@@ -20,10 +20,11 @@ FRONTEND_ORIGINS=https://your-frontend-domain.example
 DATABASE_URL=postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres
 DATABASE_SSL=require
 DATABASE_AUTO_CREATE_TABLES=false
+DATABASE_AUTO_MIGRATE=true
 PORT=8000
 ```
 
-Run Alembic migrations from the backend container shell before first production use:
+With `DATABASE_AUTO_MIGRATE=true`, the backend applies Alembic migrations during startup. If you prefer manual migrations, set it to `false` and run this from the backend container shell before first production use:
 
 ```bash
 alembic upgrade head

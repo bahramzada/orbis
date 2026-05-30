@@ -17,7 +17,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
 - Production mode requires bearer-token protection for protected API endpoints, strict non-local CORS origins, verified database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
-- Database schema management supports Alembic migrations for production deployments.
+- Database schema management supports Alembic migrations for production deployments, with optional startup auto-migration via `DATABASE_AUTO_MIGRATE`.
 - AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.
 - Frontend owns agent management UI with two views:
   - Simple visual management
@@ -32,7 +32,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, prompt builders, logged agent orchestration, capability endpoints, API schemas
+- `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, startup migration runner, prompt builders, logged agent orchestration, capability endpoints, API schemas
 - `backend/Dockerfile`: Coolify-ready backend API container
 - `backend/migrations`: Alembic migrations for workflow persistence tables and indexes
 - `backend/tests`: backend test coverage

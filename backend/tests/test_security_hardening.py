@@ -17,6 +17,7 @@ def secure_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "metrics_api_token", "")
     monkeypatch.setattr(settings, "database_url", "")
     monkeypatch.setattr(settings, "database_auto_create_tables", False)
+    monkeypatch.setattr(settings, "database_auto_migrate", False)
     monkeypatch.setattr(settings, "database_ssl", "require")
 
 
@@ -59,6 +60,14 @@ def test_metrics_requires_authorization_when_token_is_configured() -> None:
 
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
+
+
+def test_health_reports_database_status() -> None:
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["database_status"] == "disabled"
 
 
 def test_run_detail_rejects_invalid_uuid_path() -> None:

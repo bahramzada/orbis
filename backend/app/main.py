@@ -19,6 +19,7 @@ from starlette import status
 from app.agents import AgentOrchestrator, AgentRegistry, WORKERS
 from app.config import get_settings
 from app.db import DatabaseRepository
+from app.migration_runner import run_database_migrations
 from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
 from app.schemas import (
@@ -55,6 +56,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(level=settings.log_level.upper())
     settings.validate_security_settings()
     client = OpenRouterClient(settings)
+    if settings.database_auto_migrate and settings.is_database_configured:
+        try:
+            await run_database_migrations(settings)
+        except Exception:
+            logger.exception("Database auto migration failed.")
     database = DatabaseRepository(settings)
     await database.init()
     app.state.openrouter_client = client
@@ -162,6 +168,7 @@ async def health(
         status="ok",
         openrouter_configured=client.is_configured,
         database_configured=database.is_configured,
+        database_status=database.status,
         model=client.model,
     )
 

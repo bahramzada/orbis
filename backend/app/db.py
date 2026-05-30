@@ -17,8 +17,10 @@ from sqlalchemy import (
     Table,
     Text,
     delete,
+    inspect,
     insert,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
@@ -41,6 +43,19 @@ from app.schemas import (
 
 SslConfig: TypeAlias = bool | ssl.SSLContext
 logger = logging.getLogger(__name__)
+
+REQUIRED_TABLE_NAMES = frozenset(
+    {
+        "workflow_runs",
+        "workflow_logs",
+        "agent_profiles",
+        "workflow_templates",
+        "memory_items",
+        "tool_calls",
+        "run_evaluations",
+        "alembic_version",
+    }
+)
 
 
 metadata = MetaData()
@@ -163,6 +178,7 @@ class DatabaseRepository:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._engine: AsyncEngine | None = None
+        self._last_error = ""
         if settings.is_database_configured:
             self._engine = create_async_engine(
                 settings.sqlalchemy_database_url,
@@ -180,17 +196,29 @@ class DatabaseRepository:
     def is_configured(self) -> bool:
         return self._engine is not None
 
+    @property
+    def status(self) -> str:
+        if not self._settings.is_database_configured:
+            return "disabled"
+        if self._engine is None:
+            return "unavailable"
+        return "ready"
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
     async def init(self) -> None:
         if self._engine is None:
             return
-        if not self._settings.database_auto_create_tables:
-            return
 
         try:
-            async with self._engine.begin() as connection:
-                await connection.run_sync(metadata.create_all)
-        except Exception:
-            self._disable_after_error("init")
+            if self._settings.database_auto_create_tables:
+                async with self._engine.begin() as connection:
+                    await connection.run_sync(metadata.create_all)
+            await self._verify_schema()
+        except Exception as exc:
+            self._disable_after_error("init", exc)
 
     async def close(self) -> None:
         if self._engine is not None:
@@ -261,8 +289,8 @@ class DatabaseRepository:
                             for log in run.logs
                         ],
                     )
-        except Exception:
-            self._disable_after_error("save_run")
+        except Exception as exc:
+            self._disable_after_error("save_run", exc)
         finally:
             db_timer.stop()
 
@@ -287,8 +315,8 @@ class DatabaseRepository:
 
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).mappings().all()
-        except Exception:
-            self._disable_after_error("list_runs")
+        except Exception as exc:
+            self._disable_after_error("list_runs", exc)
             return []
         finally:
             db_timer.stop()
@@ -332,8 +360,8 @@ class DatabaseRepository:
                         .order_by(run_evaluations.c.created_at.desc())
                     )
                 ).mappings().all()
-        except Exception:
-            self._disable_after_error("get_run")
+        except Exception as exc:
+            self._disable_after_error("get_run", exc)
             return None
 
         return RunDetail(
@@ -400,8 +428,8 @@ class DatabaseRepository:
                         completed_at=_now(),
                     )
                 )
-        except Exception:
-            self._disable_after_error("update_run")
+        except Exception as exc:
+            self._disable_after_error("update_run", exc)
 
     async def list_agent_profiles(self) -> list[AgentProfile]:
         if self._engine is None:
@@ -409,8 +437,8 @@ class DatabaseRepository:
         try:
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(select(agent_profiles))).mappings().all()
-        except Exception:
-            self._disable_after_error("list_agent_profiles")
+        except Exception as exc:
+            self._disable_after_error("list_agent_profiles", exc)
             return []
         return [AgentProfile.model_validate(dict(row)) for row in rows]
 
@@ -425,8 +453,8 @@ class DatabaseRepository:
                         insert(agent_profiles),
                         [profile.model_dump(mode="json") for profile in profiles],
                     )
-        except Exception:
-            self._disable_after_error("save_agent_profiles")
+        except Exception as exc:
+            self._disable_after_error("save_agent_profiles", exc)
 
     async def list_memories(self) -> list[MemoryItem]:
         if self._engine is None:
@@ -438,8 +466,8 @@ class DatabaseRepository:
                         select(memory_items).order_by(memory_items.c.created_at.desc())
                     )
                 ).mappings().all()
-        except Exception:
-            self._disable_after_error("list_memories")
+        except Exception as exc:
+            self._disable_after_error("list_memories", exc)
             return []
         return [
             MemoryItem(
@@ -468,8 +496,8 @@ class DatabaseRepository:
             try:
                 async with self._engine.begin() as connection:
                     await connection.execute(insert(memory_items).values(**values))
-            except Exception:
-                self._disable_after_error("create_memory")
+            except Exception as exc:
+                self._disable_after_error("create_memory", exc)
         return item
 
     async def list_templates(self) -> list[WorkflowTemplate]:
@@ -480,8 +508,8 @@ class DatabaseRepository:
                 rows = (
                     await connection.execute(select(workflow_templates))
                 ).mappings().all()
-        except Exception:
-            self._disable_after_error("list_templates")
+        except Exception as exc:
+            self._disable_after_error("list_templates", exc)
             return []
         return [WorkflowTemplate.model_validate(dict(row)) for row in rows]
 
@@ -494,13 +522,35 @@ class DatabaseRepository:
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(insert(run_evaluations).values(**values))
-        except Exception:
-            self._disable_after_error("save_evaluation")
+        except Exception as exc:
+            self._disable_after_error("save_evaluation", exc)
 
-    def _disable_after_error(self, operation: str) -> None:
+    async def _verify_schema(self) -> None:
+        if self._engine is None:
+            return
+
+        async with self._engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+            table_names = await connection.run_sync(
+                lambda sync_connection: set(inspect(sync_connection).get_table_names())
+            )
+
+        missing_tables = sorted(REQUIRED_TABLE_NAMES - table_names)
+        if missing_tables:
+            missing = ", ".join(missing_tables)
+            raise RuntimeError(
+                "Database schema is incomplete. "
+                f"Missing tables: {missing}. "
+                "Run `alembic upgrade head` or set DATABASE_AUTO_MIGRATE=true."
+            )
+
+    def _disable_after_error(self, operation: str, exc: Exception) -> None:
+        self._last_error = _safe_db_error(exc)
         logger.warning(
-            "Database operation failed; persistence is disabled for this process.",
-            extra={"operation": operation},
+            "Database operation failed; persistence is disabled for this process. "
+            "operation=%s error=%s",
+            operation,
+            self._last_error,
         )
         self._engine = None
 
@@ -514,6 +564,13 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _safe_db_error(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    if len(message) > 280:
+        message = f"{message[:277]}..."
+    return f"{exc.__class__.__name__}: {message}"
 
 
 def _ssl_config(value: str) -> SslConfig:

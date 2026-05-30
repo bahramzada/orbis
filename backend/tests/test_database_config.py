@@ -88,13 +88,14 @@ def test_pool_settings_are_configurable() -> None:
 
 
 def test_runtime_performance_settings_have_safe_defaults() -> None:
-    settings = Settings()
+    settings = Settings(DATABASE_AUTO_MIGRATE=False)
 
     assert settings.workflow_max_concurrency >= 1
     assert settings.workflow_step_timeout_seconds > 0
     assert settings.openrouter_max_connections >= settings.openrouter_max_keepalive
     assert settings.openrouter_retry_attempts >= 1
     assert settings.database_pool_size >= 1
+    assert Settings.model_fields["database_auto_migrate"].default is False
 
 
 def test_database_read_failure_disables_optional_persistence() -> None:
@@ -106,8 +107,18 @@ async def _run_database_read_failure_test() -> None:
         def connect(self) -> None:
             raise OSError("database unavailable")
 
-    repository = DatabaseRepository(Settings(DATABASE_URL=""))
+    repository = DatabaseRepository(
+        Settings(
+            DATABASE_URL=(
+                "postgresql://postgres.example:secret"
+                "@aws-1-ap-northeast-1.pooler.supabase.com:5432/postgres"
+            ),
+            DATABASE_SSL="require",
+        )
+    )
     repository._engine = cast(AsyncEngine, BrokenEngine())
 
     assert await repository.list_agent_profiles() == []
     assert repository.is_configured is False
+    assert repository.status == "unavailable"
+    assert "database unavailable" in repository.last_error

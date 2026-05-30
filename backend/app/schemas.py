@@ -185,4 +185,5 @@ class HealthResponse(BaseModel):
     status: str
     openrouter_configured: bool
     database_configured: bool
+    database_status: str = "disabled"
     model: str
