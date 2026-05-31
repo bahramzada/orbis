@@ -25,7 +25,7 @@ async def _run_retry_test() -> None:
 
     client = OpenRouterClient(
         Settings(
-            OPENROUTER_API_KEY="test-key",
+            OPENROUTER_API_KEY="test-key",  # pragma: allowlist secret
             OPENROUTER_RETRY_ATTEMPTS=2,
             OPENROUTER_RETRY_BASE_SECONDS=0,
         ),
@@ -61,7 +61,7 @@ async def _run_cache_test() -> None:
 
     client = OpenRouterClient(
         Settings(
-            OPENROUTER_API_KEY="test-key",
+            OPENROUTER_API_KEY="test-key",  # pragma: allowlist secret
             WORKFLOW_CACHE_TTL_SECONDS=60,
         ),
         transport=httpx.MockTransport(handler),

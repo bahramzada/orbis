@@ -17,8 +17,16 @@ APP_ENV=production
 ORBIS_API_TOKEN=change-this-shared-token
 OPENROUTER_API_KEY=change-this-openrouter-key
 FRONTEND_ORIGINS=https://your-frontend-domain.example
+CORS_ALLOW_CREDENTIALS=true
 AUTH_SESSION_TTL_HOURS=720
+AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
+AUTH_RATE_LIMIT_WINDOW_SECONDS=900
+SESSION_COOKIE_NAME=orbis_session
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=lax
+SESSION_COOKIE_DOMAIN=
 DATABASE_URL=postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres
+DATABASE_REQUIRED=true
 DATABASE_SSL=insecure-require
 DATABASE_AUTO_CREATE_TABLES=false
 DATABASE_AUTO_MIGRATE=true
@@ -42,12 +50,11 @@ Required environment variables:
 
 ```bash
 VITE_API_BASE_URL=https://your-backend-domain.example
-VITE_ORBIS_API_TOKEN=
 ```
 
-The frontend image writes `/config.js` on container start, so `VITE_API_BASE_URL` and `VITE_ORBIS_API_TOKEN` can be changed in Coolify without rebuilding the image.
+The frontend image writes `/config.js` on container start, so `VITE_API_BASE_URL` can be changed in Coolify without rebuilding the image.
 
-Leave `VITE_ORBIS_API_TOKEN` empty for public deployments. Users should register/login with database-backed sessions; new accounts start as `guest`.
+Users should register/login with database-backed sessions; new accounts start as `guest`.
 
 To create the first admin after a fresh deploy, register your account, then run this in Supabase SQL editor:
 
@@ -58,6 +65,7 @@ UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
 ## Important Notes
 
 - `ORBIS_API_TOKEN` is a backend bootstrap/server token. Do not expose it through the public frontend.
-- Keep `CORS_ALLOW_CREDENTIALS=false`; Orbis uses bearer session tokens, not cookies.
+- Keep `CORS_ALLOW_CREDENTIALS=true` with strict `FRONTEND_ORIGINS`; Orbis browser auth uses an `HttpOnly` cookie session plus CSRF token.
+- Keep `SESSION_COOKIE_SECURE=true` in production. Use `SESSION_COOKIE_SAMESITE=lax` for same-site subdomains, or `none` only when frontend/backend are on different sites and HTTPS is active.
 - `APP_ENV=production` rejects local frontend origins, disabled DB TLS, and automatic table creation.
-- If Supabase is temporarily unreachable, the API starts with in-memory defaults and logs that persistence is disabled for the current process.
+- If Supabase is missing or unreachable, the backend refuses to start because auth, roles, settings, and run history require Postgres.

@@ -10,26 +10,27 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend and frontend can be deployed as separate Coolify Dockerfile services.
 - Backend owns configuration, OpenRouter API access, agent orchestration, and API contracts.
 - Backend exposes `/health` with database status/error-code diagnostics, plus `/api/agents`, `/api/runs`, `/api/runs/stream`, plan preview, agent profile, memory, template, rerun, and evaluation endpoints.
-- Backend provides database-backed register/login sessions, role-based access for `guest`, `vip`, and `admin`, and admin controls for user roles plus system/registration availability.
+- Backend provides database-backed register/login sessions with `HttpOnly` cookie auth, CSRF protection for browser mutations, role-based access for `guest`, `vip`, and `admin`, and admin controls for user roles plus system/registration availability.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
 - Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
 - Backend prompt templates are centralized in `backend/app/prompts.py` with strict planning, role-specific worker instructions, and compact final synthesis rules.
-- Supabase/Postgres persistence is optional and controlled by `DATABASE_URL`.
-- When database persistence is enabled, users, sessions, system settings, workflow runs, and agent logs are stored in Postgres.
-- Production mode requires bearer-token protection for protected API endpoints, strict non-local CORS origins, encrypted database TLS, and Alembic-managed schemas.
+- Supabase/Postgres persistence is required and controlled by `DATABASE_URL`.
+- Users, sessions, system settings, workflow runs, and agent logs are stored in Postgres.
+- Production mode requires a backend bootstrap bearer token for server clients, secure cookie settings, strict non-local CORS origins with credentials, encrypted database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
-- Database schema management uses Alembic migrations and defaults to startup auto-migration via `DATABASE_AUTO_MIGRATE=true` when a database is configured.
+- Database schema management uses Alembic migrations and defaults to startup auto-migration via `DATABASE_AUTO_MIGRATE=true`.
 - AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.
 - Frontend owns agent management UI with two views:
   - Simple visual management
   - Habbo-style office management
+- Frontend blocks the workspace behind login/register and exposes admin controls through a separate `/admin` console for admin users.
 
 ## Tech Stack
 
-- Backend: Python, FastAPI, Pydantic, HTTPX, SQLAlchemy, asyncpg, Alembic
+- Backend: Python, FastAPI, Pydantic, HTTPX, SQLAlchemy, asyncpg, Alembic, Argon2id password hashing
 - Frontend: React, TypeScript, Vite, lucide-react
 - Configuration: `.env` files, no hardcoded secrets
-- Security: database-backed user sessions, role-based admin controls, environment-backed bootstrap tokens, sanitized public errors, bounded runtime caches, protected metrics, strict request schemas
+- Security: `HttpOnly` cookie sessions, CSRF tokens, Argon2id password hashing with PBKDF2 upgrade, role-based admin controls, environment-backed bootstrap tokens, sanitized public errors, bounded runtime caches, protected metrics, strict request schemas, CSP/security headers
 
 ## Project Structure
 

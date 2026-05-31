@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 import json
 import logging
 import secrets
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import AsyncIterator, cast
 from uuid import UUID, uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from httpx import HTTPError
 from starlette import status
 
@@ -24,10 +24,14 @@ from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
 from app.security import (
     AuthContext,
+    create_csrf_token,
     create_session_token,
+    hash_csrf_token,
     hash_password,
     hash_session_token,
+    password_needs_rehash,
     session_expires_at,
+    verify_csrf_token,
     verify_password,
 )
 from app.schemas import (
@@ -65,6 +69,8 @@ from app.schemas import (
 
 registry = AgentRegistry()
 logger = logging.getLogger(__name__)
+AUTH_FAILURES_MAX_KEYS = 5_000
+_auth_failures: OrderedDict[str, list[float]] = OrderedDict()
 
 
 @asynccontextmanager
@@ -96,7 +102,7 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
 
 
@@ -109,6 +115,7 @@ async def record_request_metrics(
     status_code = "500"
     try:
         response = await call_next(request)
+        _apply_security_headers(response)
         status_code = str(response.status_code)
         return response
     finally:
@@ -121,6 +128,33 @@ async def record_request_metrics(
         }
         metrics.increment("orbis_http_requests_total", labels)
         metrics.observe("orbis_http_request_duration_seconds", elapsed, labels)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    detail = "Request failed." if exc.status_code >= 500 else exc.detail
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=exc.headers,
+    )
+    _apply_security_headers(response)
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "Unhandled request failed. path=%s error_class=%s",
+        request.url.path,
+        exc.__class__.__name__,
+    )
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error."},
+    )
+    _apply_security_headers(response)
+    return response
 
 
 def get_orchestrator() -> AgentOrchestrator:
@@ -138,6 +172,11 @@ def get_database() -> DatabaseRepository:
 async def _initialize_database(settings: Settings) -> DatabaseRepository:
     database = DatabaseRepository(settings)
     if not settings.is_database_configured:
+        if settings.database_required:
+            raise RuntimeError(
+                "DATABASE_URL is required. Configure a PostgreSQL/Supabase URL "
+                "before starting Orbis."
+            )
         return database
 
     if settings.database_auto_migrate:
@@ -157,6 +196,12 @@ async def _initialize_database(settings: Settings) -> DatabaseRepository:
         await database.close()
         database = DatabaseRepository(settings)
         await database.init()
+
+    if settings.database_required and database.status != "ready":
+        raise RuntimeError(
+            "Database is required but unavailable. "
+            f"code={database.error_code or 'unknown'}"
+        )
 
     return database
 
@@ -179,6 +224,7 @@ class StreamError:
 
 
 async def require_api_token(
+    request: Request,
     authorization: str = Header(default=""),
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthContext:
@@ -204,14 +250,18 @@ async def require_api_token(
             source="api-token",
         )
 
-    if token:
-        user = await database.get_user_by_session(hash_session_token(token))
-        if user is not None:
+    session_token = request.cookies.get(settings.session_cookie_name, "")
+    if session_token:
+        session_token_hash = hash_session_token(session_token)
+        record = await database.get_session_auth(session_token_hash)
+        if record is not None:
             auth = AuthContext(
-                user_id=user.id,
-                email=user.email,
-                role=user.role,
+                user_id=record.user.id,
+                email=record.user.email,
+                role=record.user.role,
                 source="session",
+                session_token_hash=session_token_hash,
+                csrf_hash=record.csrf_hash,
             )
             system_settings = await _current_system_settings(database)
             if not system_settings.system_enabled and not auth.is_admin:
@@ -257,33 +307,54 @@ async def require_admin(
     return auth
 
 
+async def require_state_changing_auth(
+    request: Request,
+    auth: AuthContext = Depends(require_api_token),
+    x_csrf_token: str = Header(default="", alias="X-CSRF-Token"),
+) -> AuthContext:
+    if auth.source == "session" and not verify_csrf_token(x_csrf_token, auth.csrf_hash):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token.")
+    return auth
+
+
+async def require_admin_mutation(
+    auth: AuthContext = Depends(require_state_changing_auth),
+) -> AuthContext:
+    if not auth.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    return auth
+
+
 async def _current_system_settings(database: DatabaseRepository) -> SystemSettings:
     system_settings = await database.get_system_settings()
     app.state.system_settings = system_settings
     return system_settings
 
 
-def _is_authorized_legacy(authorization: str, expected_token: str) -> bool:
-    scheme, _, token = authorization.partition(" ")
-    return (
-        scheme.lower() == "bearer"
-        and bool(token)
-        and secrets.compare_digest(token, expected_token)
-    )
-
-
 async def _issue_auth_response(
     user: AuthUser,
     system_settings: SystemSettings,
     database: DatabaseRepository,
+    response: Response,
+    request: Request,
 ) -> AuthResponse:
     token = create_session_token()
+    csrf_token = create_csrf_token()
     await database.create_session(
         hash_session_token(token),
         user.id,
         session_expires_at(settings.auth_session_ttl_hours),
+        hash_csrf_token(csrf_token),
+        _request_user_agent(request),
+        _request_ip(request),
     )
-    return AuthResponse(token=token, user=user, system=system_settings)
+    _set_session_cookie(response, token)
+    return AuthResponse(
+        token=_legacy_empty_token(),
+        csrf_token=csrf_token,
+        user=user,
+        system=system_settings,
+    )
 
 
 def _normalize_user_role(value: str) -> UserRole:
@@ -296,6 +367,114 @@ def _datetime_text(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _legacy_empty_token() -> str:
+    return str()
+
+
+def _apply_security_headers(response: Response) -> None:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=token,
+        max_age=settings.auth_session_ttl_hours * 60 * 60,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite=settings.normalized_session_cookie_samesite,
+        domain=settings.session_cookie_domain.strip() or None,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.session_cookie_name,
+        domain=settings.session_cookie_domain.strip() or None,
+        path="/",
+        samesite=settings.normalized_session_cookie_samesite,
+        secure=settings.session_cookie_secure,
+        httponly=True,
+    )
+
+
+def _request_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _request_user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "")
+
+
+def _auth_rate_limit_key(request: Request, email: str) -> str:
+    return f"{_request_ip(request)}:{email.strip().lower()}"
+
+
+def _ensure_auth_rate_limit(request: Request, email: str) -> None:
+    key = _auth_rate_limit_key(request, email)
+    now = monotonic()
+    window_start = now - settings.auth_rate_limit_window_seconds
+    failures = [value for value in _auth_failures.get(key, []) if value >= window_start]
+    if failures:
+        _auth_failures[key] = failures
+        _auth_failures.move_to_end(key)
+    elif key in _auth_failures:
+        del _auth_failures[key]
+
+    if len(failures) >= settings.auth_rate_limit_max_attempts:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication attempts. Try again later.",
+        )
+
+
+def _record_auth_failure(request: Request, email: str) -> None:
+    key = _auth_rate_limit_key(request, email)
+    now = monotonic()
+    window_start = now - settings.auth_rate_limit_window_seconds
+    failures = [value for value in _auth_failures.get(key, []) if value >= window_start]
+    failures.append(now)
+    _auth_failures[key] = failures
+    _auth_failures.move_to_end(key)
+    while len(_auth_failures) > AUTH_FAILURES_MAX_KEYS:
+        _auth_failures.popitem(last=False)
+
+
+def _clear_auth_failures(request: Request, email: str) -> None:
+    _auth_failures.pop(_auth_rate_limit_key(request, email), None)
+
+
+def _ensure_admin_user_update_allowed(
+    users: list[AdminUser],
+    user_id: str,
+    payload: UserRoleUpdateRequest,
+    auth: AuthContext,
+) -> None:
+    target = next((user for user in users if user.id == user_id), None)
+    if target is None:
+        return
+    if target.id == auth.user_id and payload.is_active is False:
+        raise HTTPException(status_code=400, detail="Admins cannot disable themselves.")
+
+    active_admin_count = sum(
+        user.role == "admin" and user.is_active for user in users
+    )
+    target_will_remain_active = (
+        target.is_active if payload.is_active is None else payload.is_active
+    )
+    target_will_remain_admin = payload.role == "admin" and target_will_remain_active
+    target_is_active_admin = target.role == "admin" and target.is_active
+    if target_is_active_admin and not target_will_remain_admin and active_admin_count <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one active admin must remain.",
+        )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -315,22 +494,30 @@ async def health(
 
 @app.post("/api/auth/register", response_model=AuthResponse)
 async def register_user(
+    request: Request,
+    response: Response,
     payload: RegisterRequest,
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthResponse:
     if not database.is_configured:
         raise HTTPException(status_code=503, detail="Database is required for auth.")
 
+    await database.delete_expired_sessions()
     system_settings = await _current_system_settings(database)
     if not system_settings.system_enabled:
         raise HTTPException(status_code=403, detail="System is disabled.")
     if not system_settings.register_enabled:
         raise HTTPException(status_code=403, detail="Registration is disabled.")
 
-    email = payload.email.strip().lower()
+    email = str(payload.email).strip().lower()
+    _ensure_auth_rate_limit(request, email)
     existing = await database.get_user_by_email(email)
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Email is already registered.")
+        _record_auth_failure(request, email)
+        raise HTTPException(
+            status_code=409,
+            detail="Registration could not be completed.",
+        )
 
     display_name = payload.display_name.strip() or email.split("@", 1)[0]
     user = await database.create_user(
@@ -340,24 +527,33 @@ async def register_user(
         hash_password(payload.password),
     )
     if user is None:
-        raise HTTPException(status_code=500, detail="User could not be created.")
+        _record_auth_failure(request, email)
+        raise HTTPException(status_code=500, detail="Registration could not be completed.")
 
-    return await _issue_auth_response(user, system_settings, database)
+    _clear_auth_failures(request, email)
+    return await _issue_auth_response(user, system_settings, database, response, request)
 
 
 @app.post("/api/auth/login", response_model=AuthResponse)
 async def login_user(
+    request: Request,
+    response: Response,
     payload: LoginRequest,
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthResponse:
     if not database.is_configured:
         raise HTTPException(status_code=503, detail="Database is required for auth.")
 
-    row = await database.get_user_by_email(payload.email.strip().lower())
+    await database.delete_expired_sessions()
+    email = str(payload.email).strip().lower()
+    _ensure_auth_rate_limit(request, email)
+    row = await database.get_user_by_email(email)
     if row is None or not verify_password(payload.password, str(row["password_hash"])):
+        _record_auth_failure(request, email)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not bool(row["is_active"]):
-        raise HTTPException(status_code=403, detail="User is disabled.")
+        _record_auth_failure(request, email)
+        raise HTTPException(status_code=403, detail="Invalid email or password.")
 
     user = AuthUser(
         id=str(row["id"]),
@@ -370,7 +566,11 @@ async def login_user(
     if not system_settings.system_enabled and user.role != "admin":
         raise HTTPException(status_code=403, detail="System is disabled.")
 
-    return await _issue_auth_response(user, system_settings, database)
+    if password_needs_rehash(str(row["password_hash"])):
+        await database.update_password_hash(user.id, hash_password(payload.password))
+
+    _clear_auth_failures(request, email)
+    return await _issue_auth_response(user, system_settings, database, response, request)
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
@@ -378,10 +578,12 @@ async def auth_me(
     auth: AuthContext = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthResponse:
+    await database.delete_expired_sessions()
     system_settings = await _current_system_settings(database)
     if auth.source in {"api-token", "development"}:
         return AuthResponse(
-            token="",
+            token=_legacy_empty_token(),
+            csrf_token=_legacy_empty_token(),
             user=AuthUser(
                 id=auth.user_id,
                 email=auth.email,
@@ -395,17 +597,25 @@ async def auth_me(
     user = await database.get_user_by_id(auth.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="Unauthorized.")
-    return AuthResponse(token="", user=user, system=system_settings)
+    csrf_token = create_csrf_token()
+    await database.rotate_session_csrf(auth.session_token_hash, hash_csrf_token(csrf_token))
+    return AuthResponse(
+        token=_legacy_empty_token(),
+        csrf_token=csrf_token,
+        user=user,
+        system=system_settings,
+    )
 
 
 @app.post("/api/auth/logout")
 async def logout_user(
-    authorization: str = Header(default=""),
+    response: Response,
+    auth: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> dict[str, str]:
-    token = _bearer_token(authorization)
-    if token:
-        await database.delete_session(hash_session_token(token))
+    if auth.session_token_hash:
+        await database.delete_session(auth.session_token_hash)
+    _clear_session_cookie(response)
     return {"status": "ok"}
 
 
@@ -420,7 +630,7 @@ async def get_admin_settings(
 @app.patch("/api/admin/settings", response_model=SystemSettings)
 async def update_admin_settings(
     payload: SystemSettingsUpdate,
-    _: AuthContext = Depends(require_admin),
+    _: AuthContext = Depends(require_admin_mutation),
     database: DatabaseRepository = Depends(get_database),
 ) -> SystemSettings:
     current = await _current_system_settings(database)
@@ -451,12 +661,15 @@ async def list_admin_users(
 
 @app.patch("/api/admin/users/{user_id}", response_model=AdminUser)
 async def update_admin_user(
-    user_id: str,
+    user_id: UUID,
     payload: UserRoleUpdateRequest,
-    _: AuthContext = Depends(require_admin),
+    auth: AuthContext = Depends(require_admin_mutation),
     database: DatabaseRepository = Depends(get_database),
 ) -> AdminUser:
-    user = await database.update_user_role(user_id, payload.role, payload.is_active)
+    user_id_text = str(user_id)
+    users = await database.list_users()
+    _ensure_admin_user_update_allowed(users, user_id_text, payload, auth)
+    user = await database.update_user_role(user_id_text, payload.role, payload.is_active)
     if user is None:
         raise HTTPException(status_code=404, detail="User was not found.")
     return user
@@ -470,14 +683,14 @@ async def get_metrics(_: None = Depends(require_metrics_token)) -> PlainTextResp
 
 
 @app.get("/api/agents", response_model=AgentGraphResponse)
-async def get_agents() -> AgentGraphResponse:
+async def get_agents(_: AuthContext = Depends(require_api_token)) -> AgentGraphResponse:
     return registry.graph()
 
 
 @app.post("/api/runs", response_model=WorkflowRun)
 async def run_workflow(
     payload: RunRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -543,7 +756,7 @@ async def get_run_detail(
 @app.post("/api/plans", response_model=list[DelegationItem])
 async def preview_plan(
     payload: PlanRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -577,7 +790,7 @@ async def list_agent_profiles(
 @app.put("/api/agent-profiles", response_model=list[AgentProfile])
 async def save_agent_profiles(
     profiles: list[AgentProfile] = Body(max_length=4),
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AgentProfile]:
     normalized = _profiles_or_defaults(profiles)
@@ -588,6 +801,7 @@ async def save_agent_profiles(
 
 @app.get("/api/templates", response_model=list[WorkflowTemplate])
 async def list_templates(
+    _: AuthContext = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[WorkflowTemplate]:
     templates = await database.list_templates()
@@ -611,7 +825,7 @@ async def list_memories(
 @app.post("/api/memories", response_model=MemoryItem)
 async def create_memory(
     payload: MemoryCreateRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> MemoryItem:
     item = await database.create_memory(str(uuid4()), payload)
@@ -624,7 +838,7 @@ async def rerun_worker(
     run_id: UUID,
     worker_id: WorkerId,
     payload: RerunWorkerRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -668,7 +882,7 @@ async def rerun_worker(
 async def rerun_synthesis(
     run_id: UUID,
     payload: RerunSynthesisRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -701,7 +915,7 @@ async def rerun_synthesis(
 @app.post("/api/evaluations/compare", response_model=list[EvaluationResult])
 async def compare_evaluations(
     payload: EvaluationCompareRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[EvaluationResult]:
     results: list[EvaluationResult] = []
@@ -718,7 +932,7 @@ async def compare_evaluations(
 @app.post("/api/runs/stream")
 async def stream_workflow(
     payload: RunRequest,
-    _: None = Depends(require_api_token),
+    _: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),

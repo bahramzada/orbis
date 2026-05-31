@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import logging
 from collections.abc import Mapping
@@ -25,10 +26,12 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.config import Settings
 from app.metrics import timer
+from app.security import redact_sensitive_text
 from app.schemas import (
     AdminUser,
     AgentProfile,
@@ -65,10 +68,21 @@ REQUIRED_TABLE_NAMES = frozenset(
         "alembic_version",
     }
 )
+REQUIRED_TABLE_COLUMNS = {
+    "auth_sessions": frozenset(
+        {"csrf_hash", "last_seen_at", "user_agent", "ip_address"}
+    )
+}
 
 
 class DatabaseSchemaError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SessionAuthRecord:
+    user: AuthUser
+    csrf_hash: str
 
 
 metadata = MetaData()
@@ -206,7 +220,11 @@ auth_sessions = Table(
         nullable=False,
     ),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("csrf_hash", String(64), nullable=False),
+    Column("user_agent", String(256), nullable=False, default=""),
+    Column("ip_address", String(64), nullable=False, default=""),
 )
 
 system_settings = Table(
@@ -434,48 +452,113 @@ class DatabaseRepository:
             self._disable_after_error("update_user_role", exc)
             return None
 
-    async def create_session(
-        self,
-        token_hash: str,
-        user_id: str,
-        expires_at: datetime,
-    ) -> None:
+    async def update_password_hash(self, user_id: str, password_hash: str) -> None:
         if self._engine is None:
             return
 
         try:
             async with self._engine.begin() as connection:
                 await connection.execute(
+                    update(users)
+                    .where(users.c.id == user_id)
+                    .values(password_hash=password_hash, updated_at=_now())
+                )
+        except Exception as exc:
+            self._disable_after_error("update_password_hash", exc)
+
+    async def create_session(
+        self,
+        token_hash: str,
+        user_id: str,
+        expires_at: datetime,
+        csrf_hash: str,
+        user_agent: str = "",
+        ip_address: str = "",
+    ) -> None:
+        if self._engine is None:
+            return
+
+        now = _now()
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
                     insert(auth_sessions).values(
                         token_hash=token_hash,
                         user_id=user_id,
-                        created_at=_now(),
+                        created_at=now,
+                        last_seen_at=now,
                         expires_at=expires_at,
+                        csrf_hash=csrf_hash,
+                        user_agent=user_agent[:256],
+                        ip_address=ip_address[:64],
                     )
                 )
         except Exception as exc:
             self._disable_after_error("create_session", exc)
 
     async def get_user_by_session(self, token_hash: str) -> AuthUser | None:
+        record = await self.get_session_auth(token_hash)
+        return record.user if record is not None else None
+
+    async def get_session_auth(self, token_hash: str) -> SessionAuthRecord | None:
         if self._engine is None:
             return None
 
+        now = _now()
         try:
-            async with self._engine.connect() as connection:
+            async with self._engine.begin() as connection:
                 result = await connection.execute(
-                    select(users)
+                    select(users, auth_sessions.c.csrf_hash)
                     .select_from(
                         users.join(auth_sessions, users.c.id == auth_sessions.c.user_id)
                     )
                     .where(auth_sessions.c.token_hash == token_hash)
-                    .where(auth_sessions.c.expires_at > _now())
+                    .where(auth_sessions.c.expires_at > now)
                     .where(users.c.is_active.is_(True))
                 )
                 row = result.mappings().first()
-            return _row_to_auth_user(dict(row)) if row is not None else None
+                if row is not None:
+                    await connection.execute(
+                        update(auth_sessions)
+                        .where(auth_sessions.c.token_hash == token_hash)
+                        .values(last_seen_at=now)
+                    )
+            if row is None:
+                return None
+            row_dict = dict(row)
+            return SessionAuthRecord(
+                user=_row_to_auth_user(row_dict),
+                csrf_hash=str(row_dict["csrf_hash"]),
+            )
         except Exception as exc:
             self._disable_after_error("get_user_by_session", exc)
             return None
+
+    async def rotate_session_csrf(self, token_hash: str, csrf_hash: str) -> None:
+        if self._engine is None:
+            return
+
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    update(auth_sessions)
+                    .where(auth_sessions.c.token_hash == token_hash)
+                    .values(csrf_hash=csrf_hash, last_seen_at=_now())
+                )
+        except Exception as exc:
+            self._disable_after_error("rotate_session_csrf", exc)
+
+    async def delete_expired_sessions(self) -> None:
+        if self._engine is None:
+            return
+
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(auth_sessions).where(auth_sessions.c.expires_at <= _now())
+                )
+        except Exception as exc:
+            self._disable_after_error("delete_expired_sessions", exc)
 
     async def delete_session(self, token_hash: str) -> None:
         if self._engine is None:
@@ -809,12 +892,30 @@ class DatabaseRepository:
                 "Keep DATABASE_AUTO_MIGRATE=true for automatic startup migrations, "
                 "or run `alembic upgrade head` from a release step."
             )
+        missing_columns: list[str] = []
+        for table_name, column_names in REQUIRED_TABLE_COLUMNS.items():
+            actual_columns = await connection.run_sync(
+                _inspect_column_names,
+                table_name,
+            )
+            missing_columns.extend(
+                f"{table_name}.{column_name}"
+                for column_name in sorted(column_names - actual_columns)
+            )
+        if missing_columns:
+            missing = ", ".join(missing_columns)
+            raise DatabaseSchemaError(
+                "Database schema is incomplete. "
+                f"Missing columns: {missing}. "
+                "Keep DATABASE_AUTO_MIGRATE=true for automatic startup migrations, "
+                "or run `alembic upgrade head` from a release step."
+            )
 
     def _disable_after_error(self, operation: str, exc: Exception) -> None:
         self._last_error = _safe_db_error(exc)
         self._last_error_code = _classify_db_error(exc)
         logger.warning(
-            "Database operation failed; persistence is disabled for this process. "
+            "Database operation failed; database is unavailable for this process. "
             "operation=%s code=%s error=%s",
             operation,
             self._last_error_code,
@@ -864,6 +965,13 @@ def cast_user_role(value: str) -> UserRole:
     return "guest"
 
 
+def _inspect_column_names(connection: Connection, table_name: str) -> set[str]:
+    return {
+        column["name"]
+        for column in inspect(connection).get_columns(table_name)
+    }
+
+
 def _text_to_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
@@ -875,7 +983,7 @@ def _bool_to_text(value: bool) -> str:
 
 
 def _safe_db_error(exc: Exception) -> str:
-    message = str(exc).replace("\n", " ").strip()
+    message = redact_sensitive_text(str(exc).replace("\n", " ").strip())
     if len(message) > 280:
         message = f"{message[:277]}..."
     return f"{exc.__class__.__name__}: {message}"

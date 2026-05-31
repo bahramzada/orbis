@@ -9,15 +9,23 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app import migration_runner
 from app.config import Settings
 from app.db import DatabaseRepository, _ssl_config, metadata
+from app.main import _initialize_database
 
 
 def test_database_url_is_optional() -> None:
-    settings = Settings(DATABASE_URL="")
+    settings = Settings(DATABASE_URL="", DATABASE_REQUIRED=False)
     repository = DatabaseRepository(settings)
 
     assert settings.is_database_configured is False
     assert repository.is_persistence_configured is False
     assert repository.is_configured is False
+
+
+def test_database_url_is_required_by_default() -> None:
+    settings = Settings(DATABASE_URL="")
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+        asyncio.run(_initialize_database(settings))
 
 
 def test_supabase_postgres_url_is_converted_for_asyncpg() -> None:
@@ -103,6 +111,7 @@ def test_runtime_performance_settings_have_safe_defaults() -> None:
     assert settings.openrouter_retry_attempts >= 1
     assert settings.database_pool_size >= 1
     assert Settings.model_fields["database_auto_migrate"].default is True
+    assert Settings.model_fields["database_required"].default is True
     assert Settings(DATABASE_AUTO_MIGRATE=False).database_auto_migrate is False
 
 
@@ -165,6 +174,9 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
         "backend/migrations/versions/20260530_0002_ai_capability_tables.py"
     )
     third_migration = "backend/migrations/versions/20260531_0003_auth_tables.py"
+    fourth_migration = (
+        "backend/migrations/versions/20260531_0004_secure_sessions.py"
+    )
 
     with open(first_migration, encoding="utf-8") as migration_file:
         first_source = migration_file.read()
@@ -172,6 +184,8 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
         second_source = migration_file.read()
     with open(third_migration, encoding="utf-8") as migration_file:
         third_source = migration_file.read()
+    with open(fourth_migration, encoding="utf-8") as migration_file:
+        fourth_source = migration_file.read()
 
     assert "_table_exists" in first_source
     assert "CREATE INDEX IF NOT EXISTS" in first_source
@@ -180,3 +194,14 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
     assert "CREATE INDEX IF NOT EXISTS" in second_source
     assert "_table_exists" in third_source
     assert "CREATE INDEX IF NOT EXISTS" in third_source
+    assert "_column_exists" in fourth_source
+    assert "_add_column_if_missing" in fourth_source
+
+
+def test_secure_session_columns_are_declared() -> None:
+    auth_sessions = metadata.tables["auth_sessions"]
+
+    assert "csrf_hash" in auth_sessions.c
+    assert "last_seen_at" in auth_sessions.c
+    assert "user_agent" in auth_sessions.c
+    assert "ip_address" in auth_sessions.c

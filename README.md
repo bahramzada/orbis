@@ -108,7 +108,7 @@ flowchart TB
 | Backend | Python, FastAPI, Pydantic, HTTPX, SQLAlchemy, asyncpg, Alembic |
 | Frontend | React, TypeScript, Vite, lucide-react |
 | AI Provider | OpenRouter-compatible chat completions |
-| Persistence | Supabase/Postgres with optional local disabled mode |
+| Persistence | Required Supabase/Postgres with Alembic migrations |
 | Observability | Structured logs, request metrics, workflow metrics, `/metrics` endpoint |
 | Configuration | `.env` files, no hardcoded secrets |
 
@@ -161,15 +161,21 @@ METRICS_API_TOKEN=
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-CORS_ALLOW_CREDENTIALS=false
+CORS_ALLOW_CREDENTIALS=true
 AUTH_SESSION_TTL_HOURS=720
+AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
+AUTH_RATE_LIMIT_WINDOW_SECONDS=900
+SESSION_COOKIE_NAME=orbis_session
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_SAMESITE=lax
+SESSION_COOKIE_DOMAIN=
 ```
 
-When `ORBIS_API_TOKEN` is set, protected API calls can still send `Authorization: Bearer <token>` for server-side or bootstrap admin access. For public frontend deployments, keep `VITE_ORBIS_API_TOKEN` empty and use database-backed login sessions instead.
+When `ORBIS_API_TOKEN` is set, server-side or bootstrap admin clients can send `Authorization: Bearer <token>`. The public frontend never consumes this token; browser users authenticate through an `HttpOnly` cookie session and CSRF token.
 
 ## Authentication
 
-Orbis supports database-backed register/login once `DATABASE_URL` is configured. New users are created as `guest`; admins can promote users to `vip` or `admin` from the Admin Panel or directly in Postgres.
+Orbis requires database-backed register/login once `DATABASE_URL` is configured. New users are created as `guest`; admins can promote users to `vip` or `admin` from the separate `/admin` page or directly in Postgres.
 
 Admin controls include:
 
@@ -185,8 +191,15 @@ UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
 ```
 
 In production, `APP_ENV=production` requires `ORBIS_API_TOKEN` as a secure bootstrap/server token and rejects local CORS origins.
+Production also requires secure cookies:
 
-For local development without a configured database, Orbis keeps a no-token development admin fallback. Once `DATABASE_URL` is configured, normal user sessions are required unless the bootstrap bearer token is supplied.
+```bash
+CORS_ALLOW_CREDENTIALS=true
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=lax
+```
+
+If frontend and backend are on completely different sites rather than subdomains of the same site, use `SESSION_COOKIE_SAMESITE=none` with HTTPS-only `SESSION_COOKIE_SECURE=true`.
 
 Useful runtime controls:
 
@@ -203,10 +216,11 @@ ENABLE_METRICS=true
 
 ## Database
 
-Supabase/Postgres is optional. If `DATABASE_URL` is empty or still contains `[YOUR-PASSWORD]`, persistence remains disabled and the app can still run for development.
+Supabase/Postgres is required. If `DATABASE_URL` is empty, still contains `[YOUR-PASSWORD]`, or cannot connect, the backend refuses to start.
 
 ```bash
 DATABASE_URL=postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres
+DATABASE_REQUIRED=true
 DATABASE_SSL=require
 DATABASE_POOL_SIZE=3
 DATABASE_MAX_OVERFLOW=2
@@ -219,7 +233,7 @@ If your database password contains reserved URL characters, URL-encode it before
 
 `DATABASE_SSL=require` uses certificate verification by default. Supabase poolers can require libpq-style encrypted mode without hostname verification; use `DATABASE_SSL=insecure-require` for that deployment case.
 
-When `DATABASE_URL` is configured, Orbis runs Alembic migrations automatically during backend startup by default. If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
+Orbis runs Alembic migrations automatically during backend startup by default. If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
 
 ```bash
 cd backend
@@ -248,7 +262,7 @@ Main persisted entities:
 | `POST` | `/api/auth/register` | Create a guest user and session. |
 | `POST` | `/api/auth/login` | Create a session for an existing active user. |
 | `GET` | `/api/auth/me` | Return current authenticated user and system settings. |
-| `POST` | `/api/auth/logout` | Revoke the current session token. |
+| `POST` | `/api/auth/logout` | Revoke the current cookie session. |
 | `GET` / `PATCH` | `/api/admin/settings` | Admin-only system and registration switches. |
 | `GET` | `/api/admin/users` | Admin-only user list. |
 | `PATCH` | `/api/admin/users/{user_id}` | Admin-only role and active-state updates. |
@@ -265,9 +279,9 @@ Main persisted entities:
 | `POST` | `/api/runs/{run_id}/rerun/synthesis` | Rerun only the final synthesis. |
 | `POST` | `/api/evaluations/compare` | Score one or more runs with a lightweight rubric. |
 
-`/health` includes `database_status` and a non-secret `database_error_code` so deployments can distinguish disabled persistence from connection, schema, SSL, DNS, or auth failures.
+`/health` includes `database_status` and a non-secret `database_error_code` so deployments can distinguish connection, schema, SSL, DNS, or auth failures.
 
-State-changing endpoints and run/history/memory/profile details require either a valid user session or the server bootstrap token. Keep `/health` public for uptime checks.
+State-changing browser requests require a valid cookie session plus `X-CSRF-Token`; server-side bootstrap calls can use `Authorization: Bearer <ORBIS_API_TOKEN>`. Keep `/health` public for uptime checks.
 
 ## Validation
 

@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 AgentKind = Literal["supervisor", "worker"]
@@ -16,14 +16,7 @@ NameText = Annotated[str, Field(min_length=1, max_length=120)]
 ShortText = Annotated[str, Field(min_length=1, max_length=600)]
 MediumText = Annotated[str, Field(min_length=1, max_length=1200)]
 LongText = Annotated[str, Field(min_length=1, max_length=6000)]
-EmailText = Annotated[
-    str,
-    Field(
-        min_length=3,
-        max_length=320,
-        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-    ),
-]
+EmailText = Annotated[EmailStr, Field(max_length=320)]
 
 
 class AgentNode(BaseModel):
@@ -212,10 +205,25 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(default="", max_length=120)
 
+    @field_validator("email", mode="after")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        return str(value).strip().lower()
+
+    @field_validator("display_name", mode="after")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        return value.strip()
+
 
 class LoginRequest(BaseModel):
     email: EmailText
     password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email", mode="after")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        return str(value).strip().lower()
 
 
 class SystemSettings(BaseModel):
@@ -225,6 +233,7 @@ class SystemSettings(BaseModel):
 
 class AuthResponse(BaseModel):
     token: str
+    csrf_token: str = ""
     user: AuthUser
     system: SystemSettings
 

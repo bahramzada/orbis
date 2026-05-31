@@ -4,16 +4,18 @@ import {
   Building2,
   BrainCircuit,
   CheckCircle2,
+  LayoutDashboard,
   Loader2,
+  LogOut,
   Network,
   Play,
+  ShieldCheck,
   XCircle
 } from "lucide-react";
 
 import {
   compareEvaluations,
   createMemory,
-  clearAuthToken,
   fallbackGraph,
   fetchAdminUsers,
   fetchAgentProfiles,
@@ -21,7 +23,6 @@ import {
   fetchCurrentAuth,
   fetchMemories,
   fetchTemplates,
-  hasConfiguredApiToken,
   loginUser,
   logoutUser,
   previewPlan,
@@ -30,11 +31,11 @@ import {
   rerunWorker,
   runWorkflowStream,
   saveAgentProfiles,
-  setAuthToken,
   updateAdminUser,
   updateSystemSettings
 } from "./api";
 import { ActivityLog } from "./components/ActivityLog";
+import { AdminPage } from "./components/AdminPage";
 import { AuthPanel } from "./components/AuthPanel";
 import { CapabilityControls } from "./components/CapabilityControls";
 import { OfficeGraph, VisualGraph } from "./components/GraphViews";
@@ -58,6 +59,8 @@ import type {
 } from "./types";
 import type { MemoryDraft, RunState, ViewMode } from "./uiTypes";
 
+type AppRoute = "dashboard" | "admin";
+
 const initialMemoryDraft: MemoryDraft = {
   title: "",
   category: "company context",
@@ -67,6 +70,7 @@ const initialMemoryDraft: MemoryDraft = {
 function App() {
   const [graph, setGraph] = useState<AgentGraph>(fallbackGraph);
   const [mode, setMode] = useState<ViewMode>("visual");
+  const [route, setRoute] = useState<AppRoute>(() => routeFromPath());
   const [task, setTask] = useState(starterTask);
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [logs, setLogs] = useState<WorkflowLog[]>([]);
@@ -95,7 +99,8 @@ function App() {
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isRunning = runState === "running";
-  const canUseProtectedApi = Boolean(authUser) || hasConfiguredApiToken();
+  const canUseProtectedApi = Boolean(authUser);
+  const isAdmin = authUser?.role === "admin";
 
   const supervisor = useMemo(
     () => graph.agents.find((agent) => agent.kind === "supervisor"),
@@ -107,22 +112,28 @@ function App() {
   );
 
   useEffect(() => {
+    const handlePopState = () => setRoute(routeFromPath());
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !canUseProtectedApi) {
+      setGraph(fallbackGraph);
+      return;
+    }
     fetchAgents()
       .then(setGraph)
       .catch(() => setGraph(fallbackGraph));
-  }, []);
+  }, [authReady, canUseProtectedApi]);
 
   useEffect(() => {
     fetchCurrentAuth()
       .then((auth) => {
-        if (auth.token) {
-          setAuthToken(auth.token);
-        }
         setAuthUser(auth.user);
         setSystemSettings(auth.system);
       })
       .catch(() => {
-        clearAuthToken();
         setAuthUser(null);
       })
       .finally(() => setAuthReady(true));
@@ -138,12 +149,18 @@ function App() {
   }, [authReady, canUseProtectedApi]);
 
   useEffect(() => {
+    if (!authReady) {
+      return;
+    }
     if (authUser?.role !== "admin") {
       setAdminUsers([]);
+      if (authUser && route === "admin") {
+        navigateTo("dashboard", setRoute);
+      }
       return;
     }
     fetchAdminUsers().then(setAdminUsers).catch(() => setAdminUsers([]));
-  }, [authUser]);
+  }, [authReady, authUser, route]);
 
   useEffect(() => {
     if (runState !== "success") {
@@ -161,10 +178,10 @@ function App() {
         email: authEmail.trim(),
         password: authPassword
       });
-      setAuthToken(auth.token);
       setAuthUser(auth.user);
       setSystemSettings(auth.system);
       setAuthPassword("");
+      navigateTo("dashboard", setRoute);
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : "Login failed.");
     }
@@ -178,10 +195,10 @@ function App() {
         password: authPassword,
         display_name: authDisplayName.trim()
       });
-      setAuthToken(auth.token);
       setAuthUser(auth.user);
       setSystemSettings(auth.system);
       setAuthPassword("");
+      navigateTo("dashboard", setRoute);
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : "Registration failed.");
     }
@@ -194,6 +211,11 @@ function App() {
     setMemories([]);
     setSelectedMemoryIds([]);
     setAdminUsers([]);
+    setRun(null);
+    setLogs([]);
+    setToolCalls([]);
+    setEvaluations([]);
+    navigateTo("dashboard", setRoute);
   }
 
   async function handleRefreshAdmin() {
@@ -438,58 +460,33 @@ function App() {
 
   const runButton = getRunButtonContent(runState);
 
-  return (
-    <main className="app-shell">
-      <section className="topbar">
-        <div>
+  if (!authReady) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-card">
           <p className="eyebrow">Orbis</p>
           <h1>Agent Control Room</h1>
-        </div>
-        <div className="toolbar" aria-label="View mode">
-          <button
-            className={mode === "visual" ? "active" : ""}
-            onClick={() => setMode("visual")}
-            title="Simple visual management"
-            type="button"
-          >
-            <Network size={18} />
-            Visual
-          </button>
-          <button
-            className={mode === "office" ? "active" : ""}
-            onClick={() => setMode("office")}
-            title="Office management"
-            type="button"
-          >
-            <Building2 size={18} />
-            Office
-          </button>
-        </div>
-      </section>
-
-      <section className="workspace">
-        <div className="graph-panel">
-          {mode === "visual" ? (
-            <VisualGraph graph={graph} />
-          ) : (
-            <OfficeGraph supervisor={supervisor} workers={workers} />
-          )}
-        </div>
-
-        <aside className="control-panel">
-          <div className="panel-header">
-            <div>
-              <p className="eyebrow">Workflow</p>
-              <h2>Supervisor Run</h2>
-            </div>
-            <BrainCircuit size={24} />
+          <div className="empty-state">
+            <Loader2 className="spin" size={18} />
+            Loading session
           </div>
+        </section>
+      </main>
+    );
+  }
 
+  if (!authUser) {
+    return (
+      <main className="auth-screen">
+        <section className="auth-card">
+          <div>
+            <p className="eyebrow">Orbis</p>
+            <h1>Agent Control Room</h1>
+            <p className="auth-copy">Login or create a guest account to continue.</p>
+          </div>
           <AuthPanel
-            adminUsers={adminUsers}
             authError={authError}
             authMode={authMode}
-            authUser={authUser}
             displayName={authDisplayName}
             email={authEmail}
             password={authPassword}
@@ -498,79 +495,171 @@ function App() {
             onDisplayNameChange={setAuthDisplayName}
             onEmailChange={setAuthEmail}
             onLogin={handleLogin}
-            onLogout={handleLogout}
             onPasswordChange={setAuthPassword}
-            onRefreshAdmin={handleRefreshAdmin}
             onRegister={handleRegister}
-            onSystemSettingChange={handleSystemSettingChange}
-            onUserActiveChange={handleUserActiveChange}
-            onUserRoleChange={handleUserRoleChange}
           />
+        </section>
+      </main>
+    );
+  }
 
-          <label className="task-box">
-            <span>Task</span>
-            <textarea
-              value={task}
-              onChange={(event) => handleTaskChange(event.currentTarget.value)}
-            />
-            <span className="task-helper">
-              <span>{task.trim().length}/4000</span>
-              <span>{isRunning ? "Workflow active" : run ? "Last run ready" : "No run yet"}</span>
-            </span>
-          </label>
-
-          <div className="run-actions">
+  return (
+    <main className={`app-shell ${route === "admin" ? "admin-shell" : ""}`}>
+      <section className="topbar">
+        <div>
+          <p className="eyebrow">Orbis</p>
+          <h1>{route === "admin" ? "Admin Console" : "Agent Control Room"}</h1>
+        </div>
+        <div className="topbar-actions">
+          {route === "dashboard" ? (
+            <div className="toolbar" aria-label="View mode">
+              <button
+                className={mode === "visual" ? "active" : ""}
+                onClick={() => setMode("visual")}
+                title="Simple visual management"
+                type="button"
+              >
+                <Network size={18} />
+                Visual
+              </button>
+              <button
+                className={mode === "office" ? "active" : ""}
+                onClick={() => setMode("office")}
+                title="Office management"
+                type="button"
+              >
+                <Building2 size={18} />
+                Office
+              </button>
+            </div>
+          ) : null}
+          <nav className="toolbar nav-toolbar" aria-label="Main navigation">
             <button
-              className={`run-button ${runState}`}
-              disabled={isRunning || task.trim().length < 3 || !canUseProtectedApi}
-              onClick={handleRun}
+              className={route === "dashboard" ? "active" : ""}
+              onClick={() => navigateTo("dashboard", setRoute)}
               type="button"
             >
-              {runButton.icon}
-              {runButton.label}
+              <LayoutDashboard size={18} />
+              Control
             </button>
-            {isRunning ? (
-              <button className="cancel-button" onClick={handleCancelRun} type="button">
-                <XCircle size={18} />
-                Cancel
+            {isAdmin ? (
+              <button
+                className={route === "admin" ? "active" : ""}
+                onClick={() => navigateTo("admin", setRoute)}
+                type="button"
+              >
+                <ShieldCheck size={18} />
+                Admin
               </button>
             ) : null}
+          </nav>
+          <button className="session-button" onClick={handleLogout} type="button">
+            <span>
+              {authUser.display_name || authUser.email}
+              <small>{authUser.role}</small>
+            </span>
+            <LogOut size={17} />
+          </button>
+        </div>
+      </section>
+
+      {route === "admin" ? (
+        <AdminPage
+          adminUsers={adminUsers}
+          authUser={authUser}
+          error={error}
+          systemSettings={systemSettings}
+          onRefreshAdmin={handleRefreshAdmin}
+          onSystemSettingChange={handleSystemSettingChange}
+          onUserActiveChange={handleUserActiveChange}
+          onUserRoleChange={handleUserRoleChange}
+        />
+      ) : (
+        <section className="workspace">
+          <div className="graph-panel">
+            {mode === "visual" ? (
+              <VisualGraph graph={graph} />
+            ) : (
+              <OfficeGraph supervisor={supervisor} workers={workers} />
+            )}
           </div>
 
-          {error ? <div className="error-box">{error}</div> : null}
-          <CapabilityControls
-            enableReviewPhase={enableReviewPhase}
-            memories={memories}
-            memoryDraft={memoryDraft}
-            outputFormat={outputFormat}
-            planDraft={planDraft}
-            planState={planState}
-            profileSaveState={profileSaveState}
-            profiles={profiles}
-            selectedMemoryIds={selectedMemoryIds}
-            templates={templates}
-            onCreateMemory={handleCreateMemory}
-            onMemoryDraftChange={setMemoryDraft}
-            onPlanChange={handlePlanChange}
-            onPreviewPlan={handlePreviewPlan}
-            onProfileChange={handleProfileChange}
-            onSaveProfiles={handleSaveProfiles}
-            onTemplateChange={handleTemplateChange}
-            onToggleMemory={toggleMemory}
-            onToggleReviewPhase={setEnableReviewPhase}
-            onOutputFormatChange={setOutputFormat}
-          />
-          <ActivityLog logs={run?.logs.length ? run.logs : logs} isRunning={isRunning} />
-          <RunSummary
-            evaluations={evaluations}
-            run={run}
-            toolCalls={run?.tool_calls.length ? run.tool_calls : toolCalls}
-            onEvaluate={handleEvaluate}
-            onRerunSynthesis={handleRerunSynthesis}
-            onRerunWorker={handleRerunWorker}
-          />
-        </aside>
-      </section>
+          <aside className="control-panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Workflow</p>
+                <h2>Supervisor Run</h2>
+              </div>
+              <BrainCircuit size={24} />
+            </div>
+
+            <label className="task-box">
+              <span>Task</span>
+              <textarea
+                value={task}
+                onChange={(event) => handleTaskChange(event.currentTarget.value)}
+              />
+              <span className="task-helper">
+                <span>{task.trim().length}/4000</span>
+                <span>
+                  {isRunning ? "Workflow active" : run ? "Last run ready" : "No run yet"}
+                </span>
+              </span>
+            </label>
+
+            <div className="run-actions">
+              <button
+                className={`run-button ${runState}`}
+                disabled={isRunning || task.trim().length < 3 || !canUseProtectedApi}
+                onClick={handleRun}
+                type="button"
+              >
+                {runButton.icon}
+                {runButton.label}
+              </button>
+              {isRunning ? (
+                <button className="cancel-button" onClick={handleCancelRun} type="button">
+                  <XCircle size={18} />
+                  Cancel
+                </button>
+              ) : null}
+            </div>
+
+            {error ? <div className="error-box">{error}</div> : null}
+            <CapabilityControls
+              enableReviewPhase={enableReviewPhase}
+              memories={memories}
+              memoryDraft={memoryDraft}
+              outputFormat={outputFormat}
+              planDraft={planDraft}
+              planState={planState}
+              profileSaveState={profileSaveState}
+              profiles={profiles}
+              selectedMemoryIds={selectedMemoryIds}
+              templates={templates}
+              onCreateMemory={handleCreateMemory}
+              onMemoryDraftChange={setMemoryDraft}
+              onPlanChange={handlePlanChange}
+              onPreviewPlan={handlePreviewPlan}
+              onProfileChange={handleProfileChange}
+              onSaveProfiles={handleSaveProfiles}
+              onTemplateChange={handleTemplateChange}
+              onToggleMemory={toggleMemory}
+              onToggleReviewPhase={setEnableReviewPhase}
+              onOutputFormatChange={setOutputFormat}
+            />
+            <ActivityLog logs={run?.logs.length ? run.logs : logs} isRunning={isRunning} />
+            <RunSummary
+              evaluations={evaluations}
+              run={run}
+              toolCalls={run?.tool_calls.length ? run.tool_calls : toolCalls}
+              onEvaluate={handleEvaluate}
+              onRerunSynthesis={handleRerunSynthesis}
+              onRerunWorker={handleRerunWorker}
+            />
+          </aside>
+        </section>
+      )}
     </main>
   );
 }
@@ -586,6 +675,18 @@ function getRunButtonContent(runState: RunState) {
     return { icon: <AlertTriangle size={18} />, label: "Retry" };
   }
   return { icon: <Play size={18} />, label: "Run" };
+}
+
+function routeFromPath(): AppRoute {
+  return window.location.pathname.startsWith("/admin") ? "admin" : "dashboard";
+}
+
+function navigateTo(route: AppRoute, setRoute: (route: AppRoute) => void) {
+  const path = route === "admin" ? "/admin" : "/";
+  if (window.location.pathname !== path) {
+    window.history.pushState({}, "", path);
+  }
+  setRoute(route);
 }
 
 export default App;

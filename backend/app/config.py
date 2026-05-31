@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal, cast
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173",
         alias="FRONTEND_ORIGINS",
     )
-    cors_allow_credentials: bool = Field(default=False, alias="CORS_ALLOW_CREDENTIALS")
+    cors_allow_credentials: bool = Field(default=True, alias="CORS_ALLOW_CREDENTIALS")
     request_timeout_seconds: float = Field(default=45.0, alias="REQUEST_TIMEOUT_SECONDS")
     workflow_max_concurrency: int = Field(default=2, alias="WORKFLOW_MAX_CONCURRENCY")
     workflow_step_timeout_seconds: float = Field(
@@ -60,6 +61,7 @@ class Settings(BaseSettings):
         alias="OPENROUTER_RETRY_BASE_SECONDS",
     )
     database_url: str = Field(default="", alias="DATABASE_URL")
+    database_required: bool = Field(default=True, alias="DATABASE_REQUIRED")
     database_connect_timeout_seconds: float = Field(
         default=10.0,
         alias="DATABASE_CONNECT_TIMEOUT_SECONDS",
@@ -92,6 +94,27 @@ class Settings(BaseSettings):
     )
     sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
     auth_session_ttl_hours: int = Field(default=720, alias="AUTH_SESSION_TTL_HOURS")
+    auth_rate_limit_max_attempts: int = Field(
+        default=5,
+        alias="AUTH_RATE_LIMIT_MAX_ATTEMPTS",
+    )
+    auth_rate_limit_window_seconds: int = Field(
+        default=900,
+        alias="AUTH_RATE_LIMIT_WINDOW_SECONDS",
+    )
+    session_cookie_name: str = Field(
+        default="orbis_session",
+        alias="SESSION_COOKIE_NAME",
+    )
+    session_cookie_secure: bool = Field(
+        default=False,
+        alias="SESSION_COOKIE_SECURE",
+    )
+    session_cookie_samesite: str = Field(
+        default="lax",
+        alias="SESSION_COOKIE_SAMESITE",
+    )
+    session_cookie_domain: str = Field(default="", alias="SESSION_COOKIE_DOMAIN")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),
@@ -134,11 +157,27 @@ class Settings(BaseSettings):
     def effective_metrics_token(self) -> str:
         return self.metrics_api_token.strip() or self.orbis_api_token.strip()
 
+    @property
+    def normalized_session_cookie_samesite(self) -> Literal["lax", "strict", "none"]:
+        value = self.session_cookie_samesite.strip().lower()
+        if value in {"lax", "strict", "none"}:
+            return cast(Literal["lax", "strict", "none"], value)
+        return "lax"
+
     def validate_security_settings(self) -> None:
+        if self.session_cookie_samesite.strip().lower() not in {"lax", "strict", "none"}:
+            raise RuntimeError("SESSION_COOKIE_SAMESITE must be lax, strict, or none.")
+        if (
+            self.session_cookie_samesite.strip().lower() == "none"
+            and not self.session_cookie_secure
+        ):
+            raise RuntimeError("SESSION_COOKIE_SAMESITE=none requires Secure cookies.")
         if not self.is_production:
             return
         if not self.orbis_api_token.strip():
             raise RuntimeError("ORBIS_API_TOKEN is required in production.")
+        if not self.database_required:
+            raise RuntimeError("DATABASE_REQUIRED must be true in production.")
         if self.database_auto_create_tables:
             raise RuntimeError("DATABASE_AUTO_CREATE_TABLES must be false in production.")
         if self.database_ssl.strip().lower() in {
@@ -150,6 +189,10 @@ class Settings(BaseSettings):
             "disabled",
         }:
             raise RuntimeError("Encrypted DATABASE_SSL is required in production.")
+        if not self.session_cookie_secure:
+            raise RuntimeError("SESSION_COOKIE_SECURE must be true in production.")
+        if not self.cors_allow_credentials:
+            raise RuntimeError("CORS_ALLOW_CREDENTIALS must be true for cookie auth.")
         if any(
             marker in origin
             for origin in self.cors_origins

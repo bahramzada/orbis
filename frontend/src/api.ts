@@ -18,35 +18,25 @@ import type {
 const runtimeConfig = window.__ORBIS_CONFIG__ ?? {};
 const apiBaseUrl =
   runtimeConfig.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-const apiToken = runtimeConfig.apiToken || import.meta.env.VITE_ORBIS_API_TOKEN || "";
-const authTokenStorageKey = "orbis_auth_token";
+let csrfToken = "";
 
 function authHeaders(): HeadersInit {
-  const token = getAuthToken() || apiToken;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 function jsonHeaders(): HeadersInit {
-  return {
-    "Content-Type": "application/json",
-    ...authHeaders()
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json"
   };
+  if (csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
+  return headers;
 }
 
-export function getAuthToken(): string {
-  return window.localStorage.getItem(authTokenStorageKey) ?? "";
-}
-
-export function setAuthToken(token: string): void {
-  window.localStorage.setItem(authTokenStorageKey, token);
-}
-
-export function clearAuthToken(): void {
-  window.localStorage.removeItem(authTokenStorageKey);
-}
-
-export function hasConfiguredApiToken(): boolean {
-  return Boolean(apiToken);
+function storeCsrfToken(auth: AuthResponse): AuthResponse {
+  csrfToken = auth.csrf_token ?? "";
+  return auth;
 }
 
 export async function registerUser(payload: {
@@ -57,13 +47,15 @@ export async function registerUser(payload: {
   const response = await fetch(`${apiBaseUrl}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
     const error = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(error?.detail ?? "Registration failed.");
   }
-  return response.json() as Promise<AuthResponse>;
+  const auth = (await response.json()) as AuthResponse;
+  return storeCsrfToken(auth);
 }
 
 export async function loginUser(payload: {
@@ -73,36 +65,42 @@ export async function loginUser(payload: {
   const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
     const error = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(error?.detail ?? "Login failed.");
   }
-  return response.json() as Promise<AuthResponse>;
+  const auth = (await response.json()) as AuthResponse;
+  return storeCsrfToken(auth);
 }
 
 export async function fetchCurrentAuth(): Promise<AuthResponse> {
   const response = await fetch(`${apiBaseUrl}/api/auth/me`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Session could not be loaded.");
   }
-  return response.json() as Promise<AuthResponse>;
+  const auth = (await response.json()) as AuthResponse;
+  return storeCsrfToken(auth);
 }
 
 export async function logoutUser(): Promise<void> {
   await fetch(`${apiBaseUrl}/api/auth/logout`, {
     method: "POST",
-    headers: authHeaders()
+    headers: jsonHeaders(),
+    credentials: "include"
   }).catch(() => undefined);
-  clearAuthToken();
+  csrfToken = "";
 }
 
 export async function fetchAdminUsers(): Promise<AdminUser[]> {
   const response = await fetch(`${apiBaseUrl}/api/admin/users`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Users could not be loaded.");
@@ -117,6 +115,7 @@ export async function updateAdminUser(
   const response = await fetch(`${apiBaseUrl}/api/admin/users/${userId}`, {
     method: "PATCH",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
@@ -132,6 +131,7 @@ export async function updateSystemSettings(payload: {
   const response = await fetch(`${apiBaseUrl}/api/admin/settings`, {
     method: "PATCH",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
@@ -198,7 +198,8 @@ export const fallbackGraph: AgentGraph = {
 
 export async function fetchAgents(): Promise<AgentGraph> {
   const response = await fetch(`${apiBaseUrl}/api/agents`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Agent graph could not be loaded.");
@@ -213,6 +214,7 @@ export async function runWorkflow(
   const response = await fetch(`${apiBaseUrl}/api/runs`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify({ task, ...options })
   });
 
@@ -240,6 +242,7 @@ export async function runWorkflowStream(
   const response = await fetch(`${apiBaseUrl}/api/runs/stream`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify({ task, ...options }),
     signal
   });
@@ -310,7 +313,8 @@ export async function runWorkflowStream(
 
 export async function fetchAgentProfiles(): Promise<AgentProfile[]> {
   const response = await fetch(`${apiBaseUrl}/api/agent-profiles`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Agent profiles could not be loaded.");
@@ -324,6 +328,7 @@ export async function saveAgentProfiles(
   const response = await fetch(`${apiBaseUrl}/api/agent-profiles`, {
     method: "PUT",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify(profiles)
   });
   if (!response.ok) {
@@ -334,7 +339,8 @@ export async function saveAgentProfiles(
 
 export async function fetchTemplates(): Promise<WorkflowTemplate[]> {
   const response = await fetch(`${apiBaseUrl}/api/templates`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Templates could not be loaded.");
@@ -344,7 +350,8 @@ export async function fetchTemplates(): Promise<WorkflowTemplate[]> {
 
 export async function fetchMemories(): Promise<MemoryItem[]> {
   const response = await fetch(`${apiBaseUrl}/api/memories`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Memory items could not be loaded.");
@@ -361,6 +368,7 @@ export async function createMemory(payload: {
   const response = await fetch(`${apiBaseUrl}/api/memories`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
@@ -377,6 +385,7 @@ export async function previewPlan(
   const response = await fetch(`${apiBaseUrl}/api/plans`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify({
       task,
       memory_ids: memoryIds,
@@ -392,7 +401,8 @@ export async function previewPlan(
 
 export async function fetchRunDetail(runId: string): Promise<RunDetail> {
   const response = await fetch(`${apiBaseUrl}/api/runs/${runId}`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     throw new Error("Run detail could not be loaded.");
@@ -413,6 +423,7 @@ export async function rerunWorker(
   const response = await fetch(`${apiBaseUrl}/api/runs/${runId}/rerun/worker/${workerId}`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify(options)
   });
   if (!response.ok) {
@@ -429,6 +440,7 @@ export async function rerunSynthesis(
   const response = await fetch(`${apiBaseUrl}/api/runs/${runId}/rerun/synthesis`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify({
       output_format: outputFormat,
       memory_ids: memoryIds
@@ -447,6 +459,7 @@ export async function compareEvaluations(
   const response = await fetch(`${apiBaseUrl}/api/evaluations/compare`, {
     method: "POST",
     headers: jsonHeaders(),
+    credentials: "include",
     body: JSON.stringify({
       run_ids: runIds,
       rubric

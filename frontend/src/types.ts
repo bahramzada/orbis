@@ -167,6 +167,7 @@ export type SystemSettings = {
 
 export type AuthResponse = {
   token: string;
+  csrf_token: string;
   user: AuthUser;
   system: SystemSettings;
 };
