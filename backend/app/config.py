@@ -81,6 +81,18 @@ class Settings(BaseSettings):
         default=True,
         alias="DATABASE_AUTO_MIGRATE",
     )
+    database_migration_lock_id: int = Field(
+        default=739_421_317,
+        alias="DATABASE_MIGRATION_LOCK_ID",
+    )
+    database_migration_lock_timeout_seconds: int = Field(
+        default=30,
+        alias="DATABASE_MIGRATION_LOCK_TIMEOUT_SECONDS",
+    )
+    database_migration_statement_timeout_seconds: int = Field(
+        default=240,
+        alias="DATABASE_MIGRATION_STATEMENT_TIMEOUT_SECONDS",
+    )
     max_recent_runs: int = Field(default=100, alias="MAX_RECENT_RUNS")
     max_evaluations_per_run: int = Field(
         default=20,

@@ -882,8 +882,19 @@ class DatabaseRepository:
             table_names = await connection.run_sync(
                 lambda sync_connection: set(inspect(sync_connection).get_table_names())
             )
+            missing_tables = sorted(REQUIRED_TABLE_NAMES - table_names)
+            missing_columns: list[str] = []
+            if not missing_tables:
+                for table_name, column_names in REQUIRED_TABLE_COLUMNS.items():
+                    actual_columns = await connection.run_sync(
+                        _inspect_column_names,
+                        table_name,
+                    )
+                    missing_columns.extend(
+                        f"{table_name}.{column_name}"
+                        for column_name in sorted(column_names - actual_columns)
+                    )
 
-        missing_tables = sorted(REQUIRED_TABLE_NAMES - table_names)
         if missing_tables:
             missing = ", ".join(missing_tables)
             raise DatabaseSchemaError(
@@ -891,16 +902,6 @@ class DatabaseRepository:
                 f"Missing tables: {missing}. "
                 "Keep DATABASE_AUTO_MIGRATE=true for automatic startup migrations, "
                 "or run `alembic upgrade head` from a release step."
-            )
-        missing_columns: list[str] = []
-        for table_name, column_names in REQUIRED_TABLE_COLUMNS.items():
-            actual_columns = await connection.run_sync(
-                _inspect_column_names,
-                table_name,
-            )
-            missing_columns.extend(
-                f"{table_name}.{column_name}"
-                for column_name in sorted(column_names - actual_columns)
             )
         if missing_columns:
             missing = ", ".join(missing_columns)

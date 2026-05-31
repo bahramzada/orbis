@@ -1,10 +1,12 @@
-from asyncio import run
+from asyncio import run, sleep
 from logging.config import fileConfig
+from time import monotonic
 
 from alembic import context
+import sqlalchemy as sa
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.config import Settings, get_settings
 from app.db import _ssl_config, metadata
@@ -38,10 +40,37 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    _apply_statement_timeouts(connection, _active_settings())
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
         context.run_migrations()
+
+
+def _apply_statement_timeouts(connection: Connection, settings: Settings) -> None:
+    lock_timeout_ms = max(1, settings.database_migration_lock_timeout_seconds) * 1000
+    statement_timeout_ms = (
+        max(1, settings.database_migration_statement_timeout_seconds) * 1000
+    )
+    connection.execute(sa.text(f"SET lock_timeout TO '{lock_timeout_ms}ms'"))
+    connection.execute(sa.text(f"SET statement_timeout TO '{statement_timeout_ms}ms'"))
+
+
+async def _acquire_migration_lock(
+    connection: AsyncConnection,
+    settings: Settings,
+) -> bool:
+    deadline = monotonic() + max(1, settings.database_migration_lock_timeout_seconds)
+    while True:
+        result = await connection.execute(
+            sa.text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": settings.database_migration_lock_id},
+        )
+        if bool(result.scalar_one()):
+            return True
+        if monotonic() >= deadline:
+            raise TimeoutError("Timed out waiting for the database migration lock.")
+        await sleep(1)
 
 
 async def run_migrations_online() -> None:
@@ -56,7 +85,15 @@ async def run_migrations_online() -> None:
     )
 
     async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        locked = await _acquire_migration_lock(connection, settings)
+        try:
+            await connection.run_sync(do_run_migrations)
+        finally:
+            if locked:
+                await connection.execute(
+                    sa.text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": settings.database_migration_lock_id},
+                )
 
     await connectable.dispose()
 

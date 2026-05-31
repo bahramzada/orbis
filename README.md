@@ -227,13 +227,18 @@ DATABASE_MAX_OVERFLOW=2
 DATABASE_POOL_TIMEOUT_SECONDS=10
 DATABASE_AUTO_CREATE_TABLES=false
 DATABASE_AUTO_MIGRATE=true
+DATABASE_MIGRATION_LOCK_ID=739421317
+DATABASE_MIGRATION_LOCK_TIMEOUT_SECONDS=30
+DATABASE_MIGRATION_STATEMENT_TIMEOUT_SECONDS=240
 ```
 
 If your database password contains reserved URL characters, URL-encode it before placing it in the connection string.
 
 `DATABASE_SSL=require` uses certificate verification by default. Supabase poolers can require libpq-style encrypted mode without hostname verification; use `DATABASE_SSL=insecure-require` for that deployment case.
 
-Orbis runs Alembic migrations automatically during backend startup by default. If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
+In Docker/Coolify, Orbis applies Alembic migrations in the backend entrypoint before Uvicorn starts, then disables in-process startup migration for that container. The migration runner uses a Postgres advisory lock plus bounded lock/statement timeouts so concurrent or blocked deploys fail clearly instead of hanging behind health checks.
+
+If you operate migrations manually, set `DATABASE_AUTO_MIGRATE=false` and run:
 
 ```bash
 cd backend
@@ -333,7 +338,7 @@ npm run build
 
 - Keep secrets only in environment variables.
 - Put the FastAPI app behind Nginx or another reverse proxy.
-- Keep `DATABASE_AUTO_MIGRATE=true` for simple Docker/Coolify deployments; set it to `false` only when migrations are handled by a separate release step.
+- Keep `DATABASE_AUTO_MIGRATE=true` for simple Docker/Coolify deployments; the backend container runs migrations before serving traffic.
 - Tune `WORKFLOW_MAX_CONCURRENCY` according to VPS size and OpenRouter rate limits.
 - Keep `DATABASE_POOL_SIZE` small for Supabase pooler-backed deployments.
 - Monitor `/metrics`, workflow duration, provider errors, and database latency.

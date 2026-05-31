@@ -30,10 +30,15 @@ DATABASE_REQUIRED=true
 DATABASE_SSL=insecure-require
 DATABASE_AUTO_CREATE_TABLES=false
 DATABASE_AUTO_MIGRATE=true
+DATABASE_MIGRATION_LOCK_ID=739421317
+DATABASE_MIGRATION_LOCK_TIMEOUT_SECONDS=30
+DATABASE_MIGRATION_STATEMENT_TIMEOUT_SECONDS=240
 PORT=8000
 ```
 
-With `DATABASE_AUTO_MIGRATE=true`, the backend applies Alembic migrations during startup. This is the recommended default for simple Coolify deployments. If you prefer a separate migration release step, set it to `false` and run this from the backend container shell before first production use:
+With `DATABASE_AUTO_MIGRATE=true`, the backend Docker entrypoint applies Alembic migrations before starting Uvicorn and then disables in-process migration for that container. This is the recommended default for simple Coolify deployments because updates bootstrap the schema without manual shell commands.
+
+If you prefer a separate migration release step, set it to `false` and run this from the backend container shell before first production use:
 
 ```bash
 alembic upgrade head
@@ -67,5 +72,6 @@ UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
 - `ORBIS_API_TOKEN` is a backend bootstrap/server token. Do not expose it through the public frontend.
 - Keep `CORS_ALLOW_CREDENTIALS=true` with strict `FRONTEND_ORIGINS`; Orbis browser auth uses an `HttpOnly` cookie session plus CSRF token.
 - Keep `SESSION_COOKIE_SECURE=true` in production. Use `SESSION_COOKIE_SAMESITE=lax` for same-site subdomains, or `none` only when frontend/backend are on different sites and HTTPS is active.
+- Keep backend **Port** set to `8000` unless you intentionally change `PORT` in the backend environment.
 - `APP_ENV=production` rejects local frontend origins, disabled DB TLS, and automatic table creation.
 - If Supabase is missing or unreachable, the backend refuses to start because auth, roles, settings, and run history require Postgres.

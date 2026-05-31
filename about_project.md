@@ -18,7 +18,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Users, sessions, system settings, workflow runs, and agent logs are stored in Postgres.
 - Production mode requires a backend bootstrap bearer token for server clients, secure cookie settings, strict non-local CORS origins with credentials, encrypted database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
-- Database schema management uses Alembic migrations and defaults to startup auto-migration via `DATABASE_AUTO_MIGRATE=true`.
+- Database schema management uses Alembic migrations; Docker/Coolify containers run migrations in the backend entrypoint before Uvicorn starts, with Postgres advisory locking and bounded migration timeouts.
 - AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.
 - Frontend owns agent management UI with two views:
   - Simple visual management
@@ -34,8 +34,9 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, auth/session helpers, OpenRouter client, metrics, Supabase/Postgres persistence, startup migration runner, prompt builders, logged agent orchestration, capability endpoints, API schemas
-- `backend/Dockerfile`: Coolify-ready backend API container
+- `backend/app`: FastAPI app, settings, auth/session helpers, OpenRouter client, metrics, Supabase/Postgres persistence, migration runner, prompt builders, logged agent orchestration, capability endpoints, API schemas
+- `backend/Dockerfile`: Coolify-ready backend API container with migration entrypoint and bounded healthcheck startup window
+- `backend/docker-entrypoint.sh`: production container bootstrap that runs Alembic migrations before serving API traffic
 - `backend/migrations`: Alembic migrations for workflow persistence tables and indexes
 - `backend/tests`: backend test coverage
 - `backend/requirements.lock`: pinned backend dependency set for reproducible production installs

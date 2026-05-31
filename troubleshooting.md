@@ -111,3 +111,10 @@
 - **Error:** `uv tool run` could not use the default cache/tool directories in the sandbox and later failed DNS lookup without network access.
 - **Failed Attempts:** Running `uv tool run pip-audit` and `uv tool run bandit` with default paths; then retrying with only `UV_CACHE_DIR`.
 - **Solution:** Ran scanners with `UV_CACHE_DIR=/private/tmp/orbis-uv-cache` and `UV_TOOL_DIR=/private/tmp/orbis-uv-tools`, then allowed network access for package download. `pip-audit` returned no known vulnerabilities and Bandit returned no findings for `backend/app`.
+
+## Coolify Healthcheck Failed While Auto-Migration Was Running
+
+- **Context/Component:** Backend Docker startup, Coolify healthcheck, Alembic/Supabase migrations
+- **Error:** Deploy logs stopped at Alembic `Running upgrade ...` and the container healthcheck returned `ConnectionRefusedError` because Uvicorn had not opened the API port yet.
+- **Failed Attempts:** Treating the issue as a manual Coolify operation left repeated deploys vulnerable to the same startup timing problem.
+- **Solution:** Moved Docker auto-migration into `backend/docker-entrypoint.sh` so migrations run before Uvicorn, export `DATABASE_AUTO_MIGRATE=false` for the served process, added a 300-second Docker healthcheck start period, added Postgres advisory migration locking plus lock/statement timeouts, and fixed schema verification so required column inspection happens while the database connection is open.

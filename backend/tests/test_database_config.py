@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import ssl
 from typing import cast
 
@@ -112,6 +113,9 @@ def test_runtime_performance_settings_have_safe_defaults() -> None:
     assert settings.database_pool_size >= 1
     assert Settings.model_fields["database_auto_migrate"].default is True
     assert Settings.model_fields["database_required"].default is True
+    assert settings.database_migration_lock_id > 0
+    assert settings.database_migration_lock_timeout_seconds > 0
+    assert settings.database_migration_statement_timeout_seconds > 0
     assert Settings(DATABASE_AUTO_MIGRATE=False).database_auto_migrate is False
 
 
@@ -205,3 +209,22 @@ def test_secure_session_columns_are_declared() -> None:
     assert "last_seen_at" in auth_sessions.c
     assert "user_agent" in auth_sessions.c
     assert "ip_address" in auth_sessions.c
+
+
+def test_docker_entrypoint_runs_migrations_before_api_start() -> None:
+    dockerfile = Path("backend/Dockerfile").read_text(encoding="utf-8")
+    entrypoint = Path("backend/docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'ENTRYPOINT ["./docker-entrypoint.sh"]' in dockerfile
+    assert "--start-period=300s" in dockerfile
+    assert "python -m app.migration_runner" in entrypoint
+    assert "export DATABASE_AUTO_MIGRATE=false" in entrypoint
+
+
+def test_migration_env_uses_locking_and_timeouts() -> None:
+    migration_env = Path("backend/migrations/env.py").read_text(encoding="utf-8")
+
+    assert "pg_try_advisory_lock" in migration_env
+    assert "pg_advisory_unlock" in migration_env
+    assert "SET lock_timeout" in migration_env
+    assert "SET statement_timeout" in migration_env
