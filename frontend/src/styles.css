@@ -509,9 +509,17 @@ h3 {
   fill: none;
   stroke: var(--color-primary);
   stroke-linecap: round;
+  stroke-linejoin: round;
   stroke-width: 1.4;
-  opacity: 0.32;
+  marker-end: url("#office-arrow");
+  opacity: 0.42;
   vector-effect: non-scaling-stroke;
+}
+
+.office-links marker path {
+  fill: var(--color-primary);
+  stroke: none;
+  opacity: 0.78;
 }
 
 .office-agent {
@@ -521,7 +529,7 @@ h3 {
   grid-template-columns: 42px minmax(0, 1fr);
   gap: 8px 10px;
   width: clamp(148px, 14vw, 176px);
-  min-height: 104px;
+  min-height: 94px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.96);
@@ -658,24 +666,6 @@ h3 {
   color: var(--color-muted);
   font-size: 0.8rem;
   font-weight: 750;
-}
-
-.office-progress {
-  position: relative;
-  grid-column: 1 / -1;
-  height: 8px;
-  border: 1px solid #c6d2df;
-  border-radius: 999px;
-  background: #f8fbff;
-  overflow: hidden;
-}
-
-.office-progress::before {
-  display: block;
-  width: var(--progress);
-  height: 100%;
-  background: linear-gradient(90deg, var(--color-primary), #9be46f);
-  content: "";
 }
 
 .capability-stack {
@@ -2087,10 +2077,6 @@ textarea:focus {
 
   .office-agent-copy small {
     font-size: 0.62rem;
-  }
-
-  .office-progress {
-    height: 7px;
   }
 
   .profile-controls {

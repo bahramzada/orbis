@@ -25,37 +25,32 @@ export const workerOrder = ["researcher", "strategist", "builder", "reviewer"];
 
 export const officeAgentMeta: Record<
   string,
-  { slot: string; label: string; bubble: string; progress: number }
+  { slot: string; label: string; bubble: string }
 > = {
   supervisor: {
     slot: "supervisor",
     label: "Supervisor",
-    bubble: "Decompose",
-    progress: 88
+    bubble: "Decompose"
   },
   researcher: {
     slot: "researcher",
     label: "Worker 1",
-    bubble: "Research",
-    progress: 72
+    bubble: "Research"
   },
   strategist: {
     slot: "strategist",
     label: "Worker 2",
-    bubble: "Strategy",
-    progress: 64
+    bubble: "Strategy"
   },
   builder: {
     slot: "builder",
     label: "Worker 3",
-    bubble: "Build",
-    progress: 69
+    bubble: "Build"
   },
   reviewer: {
     slot: "reviewer",
     label: "Worker 4",
-    bubble: "Review",
-    progress: 76
+    bubble: "Review"
   }
 };
 

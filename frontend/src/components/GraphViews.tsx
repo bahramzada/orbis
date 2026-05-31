@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 import { Activity, Users } from "lucide-react";
 
 import { officeAgentMeta, visualPositionOverrides, workerOrder } from "../constants";
@@ -110,10 +109,23 @@ export function OfficeGraph({
               preserveAspectRatio="none"
               viewBox="0 0 100 100"
             >
-              <path d="M50 45 L28 47" />
-              <path d="M50 48 L37 63" />
-              <path d="M50 48 L63 63" />
-              <path d="M50 45 L72 47" />
+              <defs>
+                <marker
+                  id="office-arrow"
+                  markerHeight="7"
+                  markerWidth="7"
+                  orient="auto"
+                  refX="6"
+                  refY="3.5"
+                  viewBox="0 0 7 7"
+                >
+                  <path d="M0 0 L7 3.5 L0 7 Z" />
+                </marker>
+              </defs>
+              <path d="M50 30 C43 36 34 42 24 44" />
+              <path d="M50 30 C57 36 66 42 76 44" />
+              <path d="M49 31 C44 46 39 60 36 70" />
+              <path d="M51 31 C56 46 61 60 64 70" />
             </svg>
             <div className="office-prop prop-water" />
             <div className="office-prop prop-files" />
@@ -137,7 +149,7 @@ export function OfficeGraph({
                 <dd>{workerCount}</dd>
               </div>
               <div>
-                <dt>Progress</dt>
+                <dt>State</dt>
                 <dd>Ready</dd>
               </div>
             </dl>
@@ -154,15 +166,12 @@ function OfficeAgentStation({ agent }: { agent: AgentNode }) {
     ({
       slot: "fallback",
       label: agent.kind === "supervisor" ? "Supervisor" : "Worker",
-      bubble: agent.role,
-      progress: 58
+      bubble: agent.role
     } satisfies (typeof officeAgentMeta)[string]);
-  const style = { "--progress": `${meta.progress}%` } as CSSProperties;
 
   return (
     <article
       className={`office-agent station-${meta.slot} ${agent.kind}`}
-      style={style}
       title={agent.goal}
     >
       <div className="office-agent-label">{meta.label}</div>
@@ -178,7 +187,6 @@ function OfficeAgentStation({ agent }: { agent: AgentNode }) {
         <strong>{agent.name}</strong>
         <small>{agent.role}</small>
       </div>
-      <div className="office-progress" />
     </article>
   );
 }
