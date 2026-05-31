@@ -60,6 +60,7 @@ import type {
 import type { MemoryDraft, RunState, ViewMode } from "./uiTypes";
 
 type AppRoute = "dashboard" | "admin";
+type AuthAction = "idle" | "login" | "register" | "logout";
 
 const initialMemoryDraft: MemoryDraft = {
   title: "",
@@ -95,6 +96,7 @@ function App() {
   const [authPassword, setAuthPassword] = useState("");
   const [authDisplayName, setAuthDisplayName] = useState("");
   const [authError, setAuthError] = useState("");
+  const [authAction, setAuthAction] = useState<AuthAction>("idle");
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -172,7 +174,11 @@ function App() {
   }, [runState]);
 
   async function handleLogin() {
+    if (authAction !== "idle") {
+      return;
+    }
     setAuthError("");
+    setAuthAction("login");
     try {
       const auth = await loginUser({
         email: authEmail.trim(),
@@ -184,11 +190,17 @@ function App() {
       navigateTo("dashboard", setRoute);
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : "Login failed.");
+    } finally {
+      setAuthAction("idle");
     }
   }
 
   async function handleRegister() {
+    if (authAction !== "idle") {
+      return;
+    }
     setAuthError("");
+    setAuthAction("register");
     try {
       const auth = await registerUser({
         email: authEmail.trim(),
@@ -201,21 +213,31 @@ function App() {
       navigateTo("dashboard", setRoute);
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : "Registration failed.");
+    } finally {
+      setAuthAction("idle");
     }
   }
 
   async function handleLogout() {
-    await logoutUser();
-    setAuthUser(null);
-    setProfiles([]);
-    setMemories([]);
-    setSelectedMemoryIds([]);
-    setAdminUsers([]);
-    setRun(null);
-    setLogs([]);
-    setToolCalls([]);
-    setEvaluations([]);
-    navigateTo("dashboard", setRoute);
+    if (authAction !== "idle") {
+      return;
+    }
+    setAuthAction("logout");
+    try {
+      await logoutUser();
+    } finally {
+      setAuthUser(null);
+      setProfiles([]);
+      setMemories([]);
+      setSelectedMemoryIds([]);
+      setAdminUsers([]);
+      setRun(null);
+      setLogs([]);
+      setToolCalls([]);
+      setEvaluations([]);
+      setAuthAction("idle");
+      navigateTo("dashboard", setRoute);
+    }
   }
 
   async function handleRefreshAdmin() {
@@ -485,6 +507,7 @@ function App() {
             <p className="auth-copy">Login or create a guest account to continue.</p>
           </div>
           <AuthPanel
+            authAction={authAction}
             authError={authError}
             authMode={authMode}
             displayName={authDisplayName}
@@ -553,12 +576,21 @@ function App() {
               </button>
             ) : null}
           </nav>
-          <button className="session-button" onClick={handleLogout} type="button">
+          <button
+            className={`session-button ${authAction === "logout" ? "loading" : ""}`}
+            disabled={authAction === "logout"}
+            onClick={handleLogout}
+            type="button"
+          >
             <span>
-              {authUser.display_name || authUser.email}
-              <small>{authUser.role}</small>
+              {authAction === "logout" ? "Signing out" : authUser.display_name || authUser.email}
+              <small>{authAction === "logout" ? "ending session" : authUser.role}</small>
             </span>
-            <LogOut size={17} />
+            {authAction === "logout" ? (
+              <Loader2 className="spin" size={17} />
+            ) : (
+              <LogOut size={17} />
+            )}
           </button>
         </div>
       </section>

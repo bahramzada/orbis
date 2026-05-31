@@ -59,7 +59,7 @@ function ConnectionLine({ source, target }: { source: AgentNode; target: AgentNo
 function AgentBadge({ agent }: { agent: AgentNode }) {
   return (
     <article
-      className={`agent-badge ${agent.kind}`}
+      className={`agent-badge ${agent.kind} agent-${agent.id}`}
       style={{ left: `${agent.x}%`, top: `${agent.y}%` }}
     >
       <div className="agent-icon">{agent.kind === "supervisor" ? <Users /> : <Activity />}</div>

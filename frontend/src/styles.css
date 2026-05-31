@@ -81,6 +81,14 @@ select {
   padding: 0 10px;
 }
 
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  background: #f1f5f9;
+  color: var(--color-muted);
+}
+
 input[type="checkbox"] {
   width: 16px;
   min-height: 16px;
@@ -152,6 +160,14 @@ input[type="checkbox"] {
 .session-button:hover {
   border-color: rgba(22, 117, 107, 0.42);
   background: var(--color-primary-soft);
+}
+
+.session-button:disabled,
+.session-button.loading {
+  cursor: wait;
+  border-color: var(--color-border);
+  background: var(--color-surface-soft);
+  color: var(--color-muted);
 }
 
 .session-button span,
@@ -1060,6 +1076,10 @@ textarea:focus {
 .auth-tabs button,
 .auth-submit,
 .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   min-height: 38px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -1082,6 +1102,11 @@ textarea:focus {
   color: var(--color-primary-dark);
 }
 
+.auth-tabs button:disabled {
+  cursor: wait;
+  opacity: 0.66;
+}
+
 .auth-submit:hover:not(:disabled) {
   background: var(--color-primary-dark);
 }
@@ -1091,11 +1116,33 @@ textarea:focus {
   opacity: 0.64;
 }
 
+.auth-submit.loading:disabled {
+  cursor: wait;
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+  opacity: 0.82;
+}
+
 .auth-error {
   border-radius: 6px;
   background: var(--color-error-soft);
   color: var(--color-error);
   font-size: 0.82rem;
+  padding: 8px 10px;
+}
+
+.auth-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid rgba(22, 117, 107, 0.18);
+  border-radius: 6px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary-dark);
+  font-size: 0.82rem;
+  font-weight: 800;
   padding: 8px 10px;
 }
 
@@ -1898,7 +1945,7 @@ textarea:focus {
   }
 
   .agent-badge {
-    width: clamp(122px, 33vw, 130px);
+    width: clamp(132px, 38vw, 144px);
     min-height: 72px;
     gap: 7px;
     padding: 10px;
@@ -1921,6 +1968,14 @@ textarea:focus {
 
   .agent-badge span {
     font-size: 0.7rem;
+  }
+
+  .visual-canvas .agent-strategist {
+    left: 29% !important;
+  }
+
+  .visual-canvas .agent-builder {
+    left: 71% !important;
   }
 
   .graph-panel,
@@ -2057,10 +2112,18 @@ textarea:focus {
 
 @media (max-width: 380px) {
   .agent-badge {
-    width: 116px;
+    width: 128px;
     min-height: 68px;
     gap: 6px;
     padding: 8px;
+  }
+
+  .visual-canvas .agent-strategist {
+    left: 27% !important;
+  }
+
+  .visual-canvas .agent-builder {
+    left: 73% !important;
   }
 
   .agent-icon {
