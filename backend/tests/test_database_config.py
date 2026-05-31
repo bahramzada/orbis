@@ -116,6 +116,9 @@ def test_runtime_performance_settings_have_safe_defaults() -> None:
     assert settings.database_migration_lock_id > 0
     assert settings.database_migration_lock_timeout_seconds > 0
     assert settings.database_migration_statement_timeout_seconds > 0
+    assert settings.auth_session_cleanup_interval_seconds > 0
+    assert settings.auth_session_touch_interval_seconds > 0
+    assert settings.system_settings_cache_ttl_seconds > 0
     assert Settings(DATABASE_AUTO_MIGRATE=False).database_auto_migrate is False
 
 

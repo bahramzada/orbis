@@ -88,13 +88,22 @@ export async function fetchCurrentAuth(): Promise<AuthResponse> {
   return storeCsrfToken(auth);
 }
 
-export async function logoutUser(): Promise<void> {
-  await fetch(`${apiBaseUrl}/api/auth/logout`, {
-    method: "POST",
-    headers: jsonHeaders(),
-    credentials: "include"
-  }).catch(() => undefined);
-  csrfToken = "";
+export async function logoutUser(
+  options: { keepalive?: boolean } = {}
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/auth/logout`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      credentials: "include",
+      keepalive: options.keepalive ?? false
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    csrfToken = "";
+  }
 }
 
 export async function fetchAdminUsers(): Promise<AdminUser[]> {

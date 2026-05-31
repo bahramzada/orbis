@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 from collections.abc import Mapping
 import ssl
@@ -500,7 +500,11 @@ class DatabaseRepository:
         record = await self.get_session_auth(token_hash)
         return record.user if record is not None else None
 
-    async def get_session_auth(self, token_hash: str) -> SessionAuthRecord | None:
+    async def get_session_auth(
+        self,
+        token_hash: str,
+        touch_interval_seconds: int = 300,
+    ) -> SessionAuthRecord | None:
         if self._engine is None:
             return None
 
@@ -508,7 +512,11 @@ class DatabaseRepository:
         try:
             async with self._engine.begin() as connection:
                 result = await connection.execute(
-                    select(users, auth_sessions.c.csrf_hash)
+                    select(
+                        users,
+                        auth_sessions.c.csrf_hash,
+                        auth_sessions.c.last_seen_at,
+                    )
                     .select_from(
                         users.join(auth_sessions, users.c.id == auth_sessions.c.user_id)
                     )
@@ -517,7 +525,11 @@ class DatabaseRepository:
                     .where(users.c.is_active.is_(True))
                 )
                 row = result.mappings().first()
-                if row is not None:
+                if row is not None and _should_touch_session(
+                    row["last_seen_at"],
+                    now,
+                    touch_interval_seconds,
+                ):
                     await connection.execute(
                         update(auth_sessions)
                         .where(auth_sessions.c.token_hash == token_hash)
@@ -927,6 +939,18 @@ class DatabaseRepository:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _should_touch_session(
+    last_seen_at: object,
+    now: datetime,
+    touch_interval_seconds: int,
+) -> bool:
+    if touch_interval_seconds <= 0 or not isinstance(last_seen_at, datetime):
+        return True
+    if last_seen_at.tzinfo is None:
+        last_seen_at = last_seen_at.replace(tzinfo=UTC)
+    return last_seen_at <= now - timedelta(seconds=touch_interval_seconds)
 
 
 def _parse_datetime(value: str) -> datetime:

@@ -1,4 +1,5 @@
 import asyncio
+from time import monotonic
 from typing import cast
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from app.config import Settings
 from app.db import DatabaseRepository, SessionAuthRecord
 from app.main import (
     _auth_failures,
+    _cleanup_expired_sessions,
+    _current_system_settings,
     _is_authorized,
     app,
     get_database,
@@ -30,6 +33,12 @@ class FakeAuthDatabase:
         self.users: dict[str, dict[str, object]] = {}
         self.sessions: dict[str, dict[str, str]] = {}
         self.memories: list[MemoryItem] = []
+        self.expired_session_delete_count = 0
+        self.get_user_by_id_count = 0
+        self.last_touch_interval: int | None = None
+        self.session_auth_read_count = 0
+        self.system_settings_read_count = 0
+        self.csrf_rotation_count = 0
 
     @property
     def is_configured(self) -> bool:
@@ -40,6 +49,7 @@ class FakeAuthDatabase:
         return True
 
     async def get_system_settings(self) -> SystemSettings:
+        self.system_settings_read_count += 1
         return self.system_settings
 
     async def save_system_settings(self, settings: SystemSettings) -> SystemSettings:
@@ -105,7 +115,13 @@ class FakeAuthDatabase:
             created_at=str(row["created_at"]),
         )
 
-    async def get_session_auth(self, token_hash: str) -> SessionAuthRecord | None:
+    async def get_session_auth(
+        self,
+        token_hash: str,
+        touch_interval_seconds: int = 300,
+    ) -> SessionAuthRecord | None:
+        self.session_auth_read_count += 1
+        self.last_touch_interval = touch_interval_seconds
         user = await self.get_user_by_session(token_hash)
         session = self.sessions.get(token_hash)
         if user is None or session is None:
@@ -113,16 +129,19 @@ class FakeAuthDatabase:
         return SessionAuthRecord(user=user, csrf_hash=session["csrf_hash"])
 
     async def rotate_session_csrf(self, token_hash: str, csrf_hash: str) -> None:
+        self.csrf_rotation_count += 1
         if token_hash in self.sessions:
             self.sessions[token_hash]["csrf_hash"] = csrf_hash
 
     async def delete_expired_sessions(self) -> None:
+        self.expired_session_delete_count += 1
         return None
 
     async def update_password_hash(self, user_id: str, password_hash: str) -> None:
         self.users[user_id]["password_hash"] = password_hash
 
     async def get_user_by_id(self, user_id: str) -> AuthUser | None:
+        self.get_user_by_id_count += 1
         row = self.users.get(user_id)
         if row is None:
             return None
@@ -201,8 +220,11 @@ def secure_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "session_cookie_secure", False)
     monkeypatch.setattr(settings, "session_cookie_samesite", "lax")
     monkeypatch.setattr(settings, "session_cookie_domain", "")
+    monkeypatch.setattr(settings, "auth_session_cleanup_interval_seconds", 900)
+    monkeypatch.setattr(settings, "auth_session_touch_interval_seconds", 300)
     monkeypatch.setattr(settings, "auth_rate_limit_max_attempts", 5)
     monkeypatch.setattr(settings, "auth_rate_limit_window_seconds", 900)
+    monkeypatch.setattr(settings, "system_settings_cache_ttl_seconds", 30)
     _auth_failures.clear()
 
 
@@ -325,6 +347,33 @@ def test_register_creates_guest_user_and_session() -> None:
     assert len(fake_database.sessions) == 1
 
 
+def test_expired_session_cleanup_is_throttled() -> None:
+    fake_database = FakeAuthDatabase()
+    app.state.last_session_cleanup_at = 0.0
+    app.state.last_session_cleanup_database_id = None
+
+    asyncio.run(_cleanup_expired_sessions(cast(DatabaseRepository, fake_database)))
+    asyncio.run(_cleanup_expired_sessions(cast(DatabaseRepository, fake_database)))
+
+    assert fake_database.expired_session_delete_count == 1
+
+
+def test_system_settings_cache_reuses_recent_value() -> None:
+    fake_database = FakeAuthDatabase()
+    app.state.system_settings = fake_database.system_settings
+    app.state.system_settings_cached_at = monotonic()
+    app.state.system_settings_cache_database_id = id(fake_database)
+
+    cached = asyncio.run(_current_system_settings(cast(DatabaseRepository, fake_database)))
+    refreshed = asyncio.run(
+        _current_system_settings(cast(DatabaseRepository, fake_database), force_refresh=True)
+    )
+
+    assert cached == fake_database.system_settings
+    assert refreshed == fake_database.system_settings
+    assert fake_database.system_settings_read_count == 1
+
+
 def test_secure_cookie_flags_can_be_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "session_cookie_secure", True)
     fake_database = FakeAuthDatabase()
@@ -372,6 +421,34 @@ def test_cookie_session_requires_csrf_for_mutations() -> None:
     assert register.status_code == 200
     assert missing_csrf.status_code == 403
     assert valid_csrf.status_code == 200
+
+
+def test_auth_me_uses_session_context_and_touch_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "auth_session_touch_interval_seconds", 123)
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            register = client.post(
+                "/api/auth/register",
+                json={
+                    "email": "me@example.com",
+                    "password": "strong-password",  # pragma: allowlist secret
+                    "display_name": "Me",
+                },
+            )
+            response = client.get("/api/auth/me")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert register.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["user"]["email"] == "me@example.com"
+    assert fake_database.last_touch_interval == 123
+    assert fake_database.get_user_by_id_count == 0
+    assert fake_database.csrf_rotation_count == 1
 
 
 def test_register_respects_registration_switch() -> None:

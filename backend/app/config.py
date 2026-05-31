@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     )
     sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
     auth_session_ttl_hours: int = Field(default=720, alias="AUTH_SESSION_TTL_HOURS")
+    auth_session_cleanup_interval_seconds: int = Field(
+        default=900,
+        alias="AUTH_SESSION_CLEANUP_INTERVAL_SECONDS",
+    )
+    auth_session_touch_interval_seconds: int = Field(
+        default=300,
+        alias="AUTH_SESSION_TOUCH_INTERVAL_SECONDS",
+    )
     auth_rate_limit_max_attempts: int = Field(
         default=5,
         alias="AUTH_RATE_LIMIT_MAX_ATTEMPTS",
@@ -127,6 +135,10 @@ class Settings(BaseSettings):
         alias="SESSION_COOKIE_SAMESITE",
     )
     session_cookie_domain: str = Field(default="", alias="SESSION_COOKIE_DOMAIN")
+    system_settings_cache_ttl_seconds: int = Field(
+        default=30,
+        alias="SYSTEM_SETTINGS_CACHE_TTL_SECONDS",
+    )
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),

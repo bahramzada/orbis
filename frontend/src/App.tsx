@@ -218,26 +218,33 @@ function App() {
     }
   }
 
-  async function handleLogout() {
+  function clearAuthenticatedState() {
+    setAuthUser(null);
+    setProfiles([]);
+    setMemories([]);
+    setSelectedMemoryIds([]);
+    setAdminUsers([]);
+    setRun(null);
+    setLogs([]);
+    setToolCalls([]);
+    setEvaluations([]);
+  }
+
+  function handleLogout() {
     if (authAction !== "idle") {
       return;
     }
     setAuthAction("logout");
-    try {
-      await logoutUser();
-    } finally {
-      setAuthUser(null);
-      setProfiles([]);
-      setMemories([]);
-      setSelectedMemoryIds([]);
-      setAdminUsers([]);
-      setRun(null);
-      setLogs([]);
-      setToolCalls([]);
-      setEvaluations([]);
-      setAuthAction("idle");
-      navigateTo("dashboard", setRoute);
-    }
+    setAuthError("");
+    const logoutRequest = logoutUser({ keepalive: true });
+    clearAuthenticatedState();
+    setAuthAction("idle");
+    navigateTo("dashboard", setRoute);
+    void logoutRequest.then((confirmed) => {
+      if (!confirmed) {
+        setAuthError("Signed out locally. Server logout did not confirm.");
+      }
+    });
   }
 
   async function handleRefreshAdmin() {

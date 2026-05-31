@@ -505,21 +505,13 @@ h3 {
   pointer-events: none;
 }
 
-.office-links path {
+.office-link-line {
   fill: none;
   stroke: var(--color-primary);
   stroke-linecap: round;
-  stroke-linejoin: round;
   stroke-width: 1.4;
-  marker-end: url("#office-arrow");
-  opacity: 0.42;
+  opacity: 0.34;
   vector-effect: non-scaling-stroke;
-}
-
-.office-links marker path {
-  fill: var(--color-primary);
-  stroke: none;
-  opacity: 0.78;
 }
 
 .office-agent {

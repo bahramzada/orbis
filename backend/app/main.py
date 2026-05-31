@@ -81,6 +81,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     client = OpenRouterClient(settings)
     database = await _initialize_database(settings)
     app.state.system_settings = await database.get_system_settings()
+    app.state.system_settings_cached_at = monotonic()
+    app.state.system_settings_cache_database_id = id(database)
+    app.state.last_session_cleanup_at = 0.0
+    app.state.last_session_cleanup_database_id = id(database)
     app.state.openrouter_client = client
     app.state.database = database
     app.state.orchestrator = AgentOrchestrator(client, registry, settings)
@@ -253,13 +257,18 @@ async def require_api_token(
     session_token = request.cookies.get(settings.session_cookie_name, "")
     if session_token:
         session_token_hash = hash_session_token(session_token)
-        record = await database.get_session_auth(session_token_hash)
+        record = await database.get_session_auth(
+            session_token_hash,
+            settings.auth_session_touch_interval_seconds,
+        )
         if record is not None:
             auth = AuthContext(
                 user_id=record.user.id,
                 email=record.user.email,
                 role=record.user.role,
                 source="session",
+                display_name=record.user.display_name,
+                created_at=record.user.created_at,
                 session_token_hash=session_token_hash,
                 csrf_hash=record.csrf_hash,
             )
@@ -325,10 +334,57 @@ async def require_admin_mutation(
     return auth
 
 
-async def _current_system_settings(database: DatabaseRepository) -> SystemSettings:
+async def _current_system_settings(
+    database: DatabaseRepository,
+    *,
+    force_refresh: bool = False,
+) -> SystemSettings:
+    now = monotonic()
+    database_id = id(database)
+    cached = getattr(app.state, "system_settings", None)
+    cached_at = float(getattr(app.state, "system_settings_cached_at", 0.0) or 0.0)
+    cached_database_id = getattr(app.state, "system_settings_cache_database_id", None)
+    cache_ttl = max(0, settings.system_settings_cache_ttl_seconds)
+    if (
+        not force_refresh
+        and cached is not None
+        and cached_database_id == database_id
+        and cache_ttl > 0
+        and now - cached_at < cache_ttl
+    ):
+        return cast(SystemSettings, cached)
+
     system_settings = await database.get_system_settings()
     app.state.system_settings = system_settings
+    app.state.system_settings_cached_at = now
+    app.state.system_settings_cache_database_id = database_id
     return system_settings
+
+
+async def _cleanup_expired_sessions(
+    database: DatabaseRepository,
+    *,
+    force: bool = False,
+) -> None:
+    interval = max(0, settings.auth_session_cleanup_interval_seconds)
+    now = monotonic()
+    database_id = id(database)
+    last_cleanup = float(getattr(app.state, "last_session_cleanup_at", 0.0) or 0.0)
+    last_cleanup_database_id = getattr(
+        app.state,
+        "last_session_cleanup_database_id",
+        None,
+    )
+    if (
+        not force
+        and last_cleanup_database_id == database_id
+        and interval > 0
+        and now - last_cleanup < interval
+    ):
+        return
+    await database.delete_expired_sessions()
+    app.state.last_session_cleanup_at = now
+    app.state.last_session_cleanup_database_id = database_id
 
 
 async def _issue_auth_response(
@@ -502,7 +558,7 @@ async def register_user(
     if not database.is_configured:
         raise HTTPException(status_code=503, detail="Database is required for auth.")
 
-    await database.delete_expired_sessions()
+    await _cleanup_expired_sessions(database)
     system_settings = await _current_system_settings(database)
     if not system_settings.system_enabled:
         raise HTTPException(status_code=403, detail="System is disabled.")
@@ -544,7 +600,7 @@ async def login_user(
     if not database.is_configured:
         raise HTTPException(status_code=503, detail="Database is required for auth.")
 
-    await database.delete_expired_sessions()
+    await _cleanup_expired_sessions(database)
     email = str(payload.email).strip().lower()
     _ensure_auth_rate_limit(request, email)
     row = await database.get_user_by_email(email)
@@ -578,7 +634,7 @@ async def auth_me(
     auth: AuthContext = Depends(require_api_token),
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthResponse:
-    await database.delete_expired_sessions()
+    await _cleanup_expired_sessions(database)
     system_settings = await _current_system_settings(database)
     if auth.source in {"api-token", "development"}:
         return AuthResponse(
@@ -594,15 +650,18 @@ async def auth_me(
             system=system_settings,
         )
 
-    user = await database.get_user_by_id(auth.user_id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="Unauthorized.")
     csrf_token = create_csrf_token()
     await database.rotate_session_csrf(auth.session_token_hash, hash_csrf_token(csrf_token))
     return AuthResponse(
         token=_legacy_empty_token(),
         csrf_token=csrf_token,
-        user=user,
+        user=AuthUser(
+            id=auth.user_id,
+            email=auth.email,
+            display_name=auth.display_name or auth.email.split("@", 1)[0],
+            role=auth.role,
+            created_at=auth.created_at or datetime.now(UTC).isoformat(),
+        ),
         system=system_settings,
     )
 
@@ -648,6 +707,8 @@ async def update_admin_settings(
     )
     saved = await database.save_system_settings(updated)
     app.state.system_settings = saved
+    app.state.system_settings_cached_at = monotonic()
+    app.state.system_settings_cache_database_id = id(database)
     return saved
 
 

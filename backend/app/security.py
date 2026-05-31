@@ -38,6 +38,8 @@ class AuthContext:
     email: str
     role: UserRole
     source: str
+    display_name: str = ""
+    created_at: str = ""
     session_token_hash: str = ""
     csrf_hash: str = ""
 

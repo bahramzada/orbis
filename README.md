@@ -163,12 +163,15 @@ OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 CORS_ALLOW_CREDENTIALS=true
 AUTH_SESSION_TTL_HOURS=720
+AUTH_SESSION_CLEANUP_INTERVAL_SECONDS=900
+AUTH_SESSION_TOUCH_INTERVAL_SECONDS=300
 AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
 AUTH_RATE_LIMIT_WINDOW_SECONDS=900
 SESSION_COOKIE_NAME=orbis_session
 SESSION_COOKIE_SECURE=false
 SESSION_COOKIE_SAMESITE=lax
 SESSION_COOKIE_DOMAIN=
+SYSTEM_SETTINGS_CACHE_TTL_SECONDS=30
 ```
 
 When `ORBIS_API_TOKEN` is set, server-side or bootstrap admin clients can send `Authorization: Bearer <token>`. The public frontend never consumes this token; browser users authenticate through an `HttpOnly` cookie session and CSRF token.

@@ -18,6 +18,7 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Users, sessions, system settings, workflow runs, and agent logs are stored in Postgres.
 - Production mode requires a backend bootstrap bearer token for server clients, secure cookie settings, strict non-local CORS origins with credentials, encrypted database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
+- Authentication hot paths use throttled expired-session cleanup, throttled session touch writes, and a short system-settings cache to reduce routine database roundtrips without weakening cookie/CSRF controls.
 - Database schema management uses Alembic migrations; Docker/Coolify containers run migrations in the backend entrypoint before Uvicorn starts, with Postgres advisory locking and bounded migration timeouts.
 - AI capability features include Agent Studio profiles, human-in-the-loop plan review, selected project memory injection, safe internal tool-call logging, run inspector metrics, worker/final reruns, evaluation scoring, workflow templates, structured output modes, and optional second-stage reviewer collaboration.
 - Frontend owns agent management UI with two views:
