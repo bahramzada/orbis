@@ -82,7 +82,9 @@ function RunInspector({ run }: { run: WorkflowRun }) {
           {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : "n/a"}
         </span>
         <span>{run.estimated_tokens || 0} est. tokens</span>
-        <span>${run.estimated_cost_usd.toFixed(6)}</span>
+        <span title="Estimated as text-derived tokens x $0.0000015. Actual OpenRouter billing can differ.">
+          ~${run.estimated_cost_usd.toFixed(6)} est.
+        </span>
         <span>{run.output_format}</span>
       </div>
     </>

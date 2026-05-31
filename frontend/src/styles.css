@@ -1275,17 +1275,41 @@ textarea:focus {
   content: "";
 }
 
-.markdown-table-line {
+.markdown-table-wrap {
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius);
+  margin: 0 0 12px;
+  max-width: 100%;
   overflow-x: auto;
-  border-radius: 6px;
-  background: #f1f5f9;
+  background: var(--color-surface);
+}
+
+.markdown-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  width: max-content;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border-bottom: 1px solid var(--color-border-soft);
   color: var(--color-muted-strong);
-  font-family:
-    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", monospace;
-  font-size: 0.78rem;
-  padding: 6px var(--space-2);
-  white-space: pre;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  padding: 9px 11px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.markdown-table th {
+  background: #f1f5f9;
+  color: var(--color-text);
+  font-weight: 900;
+}
+
+.markdown-table tr:last-child td {
+  border-bottom: 0;
 }
 
 @keyframes spin {
