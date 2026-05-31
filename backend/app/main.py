@@ -22,21 +22,38 @@ from app.db import DatabaseRepository, SCHEMA_INCOMPLETE_ERROR
 from app.migration_runner import run_database_migrations
 from app.metrics import metrics
 from app.openrouter_client import OpenRouterClient
+from app.security import (
+    AuthContext,
+    create_session_token,
+    hash_password,
+    hash_session_token,
+    session_expires_at,
+    verify_password,
+)
 from app.schemas import (
+    AdminUser,
     AgentGraphResponse,
     AgentProfile,
+    AuthResponse,
+    AuthUser,
     DelegationItem,
     EvaluationCompareRequest,
     EvaluationResult,
     HealthResponse,
+    LoginRequest,
     MemoryCreateRequest,
     MemoryItem,
     PlanRequest,
+    RegisterRequest,
     RerunSynthesisRequest,
     RerunWorkerRequest,
     RunDetail,
     RunRequest,
+    SystemSettings,
+    SystemSettingsUpdate,
     ToolCall,
+    UserRole,
+    UserRoleUpdateRequest,
     WorkerId,
     WorkflowTemplate,
     WorkflowLog,
@@ -57,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.validate_security_settings()
     client = OpenRouterClient(settings)
     database = await _initialize_database(settings)
+    app.state.system_settings = await database.get_system_settings()
     app.state.openrouter_client = client
     app.state.database = database
     app.state.orchestrator = AgentOrchestrator(client, registry, settings)
@@ -77,7 +95,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=settings.cors_allow_credentials,
-    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -160,15 +178,50 @@ class StreamError:
         self.detail = detail
 
 
-def require_api_token(authorization: str = Header(default="")) -> None:
+async def require_api_token(
+    authorization: str = Header(default=""),
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthContext:
     expected = settings.orbis_api_token.strip()
-    if not expected and not settings.is_production:
-        return
-    if not expected or not _is_authorized(authorization, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized.",
+    if (
+        not expected
+        and not settings.is_production
+        and not database.is_persistence_configured
+    ):
+        return AuthContext(
+            user_id="development",
+            email="development@orbis.local",
+            role="admin",
+            source="development",
         )
+
+    token = _bearer_token(authorization)
+    if expected and token and secrets.compare_digest(token, expected):
+        return AuthContext(
+            user_id="api-token",
+            email="api-token@orbis.local",
+            role="admin",
+            source="api-token",
+        )
+
+    if token:
+        user = await database.get_user_by_session(hash_session_token(token))
+        if user is not None:
+            auth = AuthContext(
+                user_id=user.id,
+                email=user.email,
+                role=user.role,
+                source="session",
+            )
+            system_settings = await _current_system_settings(database)
+            if not system_settings.system_enabled and not auth.is_admin:
+                raise HTTPException(status_code=403, detail="System is disabled.")
+            return auth
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized.",
+    )
 
 
 def require_metrics_token(authorization: str = Header(default="")) -> None:
@@ -183,12 +236,66 @@ def require_metrics_token(authorization: str = Header(default="")) -> None:
 
 
 def _is_authorized(authorization: str, expected_token: str) -> bool:
+    token = _bearer_token(authorization)
+    if not token:
+        return False
+    return secrets.compare_digest(token, expected_token)
+
+
+def _bearer_token(authorization: str) -> str:
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+async def require_admin(
+    auth: AuthContext = Depends(require_api_token),
+) -> AuthContext:
+    if not auth.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    return auth
+
+
+async def _current_system_settings(database: DatabaseRepository) -> SystemSettings:
+    system_settings = await database.get_system_settings()
+    app.state.system_settings = system_settings
+    return system_settings
+
+
+def _is_authorized_legacy(authorization: str, expected_token: str) -> bool:
     scheme, _, token = authorization.partition(" ")
     return (
         scheme.lower() == "bearer"
         and bool(token)
         and secrets.compare_digest(token, expected_token)
     )
+
+
+async def _issue_auth_response(
+    user: AuthUser,
+    system_settings: SystemSettings,
+    database: DatabaseRepository,
+) -> AuthResponse:
+    token = create_session_token()
+    await database.create_session(
+        hash_session_token(token),
+        user.id,
+        session_expires_at(settings.auth_session_ttl_hours),
+    )
+    return AuthResponse(token=token, user=user, system=system_settings)
+
+
+def _normalize_user_role(value: str) -> UserRole:
+    if value in {"admin", "guest", "vip"}:
+        return cast(UserRole, value)
+    return "guest"
+
+
+def _datetime_text(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -204,6 +311,155 @@ async def health(
         database_error_code=database.error_code,
         model=client.model,
     )
+
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register_user(
+    payload: RegisterRequest,
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthResponse:
+    if not database.is_configured:
+        raise HTTPException(status_code=503, detail="Database is required for auth.")
+
+    system_settings = await _current_system_settings(database)
+    if not system_settings.system_enabled:
+        raise HTTPException(status_code=403, detail="System is disabled.")
+    if not system_settings.register_enabled:
+        raise HTTPException(status_code=403, detail="Registration is disabled.")
+
+    email = payload.email.strip().lower()
+    existing = await database.get_user_by_email(email)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Email is already registered.")
+
+    display_name = payload.display_name.strip() or email.split("@", 1)[0]
+    user = await database.create_user(
+        str(uuid4()),
+        email,
+        display_name,
+        hash_password(payload.password),
+    )
+    if user is None:
+        raise HTTPException(status_code=500, detail="User could not be created.")
+
+    return await _issue_auth_response(user, system_settings, database)
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login_user(
+    payload: LoginRequest,
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthResponse:
+    if not database.is_configured:
+        raise HTTPException(status_code=503, detail="Database is required for auth.")
+
+    row = await database.get_user_by_email(payload.email.strip().lower())
+    if row is None or not verify_password(payload.password, str(row["password_hash"])):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not bool(row["is_active"]):
+        raise HTTPException(status_code=403, detail="User is disabled.")
+
+    user = AuthUser(
+        id=str(row["id"]),
+        email=str(row["email"]),
+        display_name=str(row["display_name"]),
+        role=_normalize_user_role(str(row["role"])),
+        created_at=_datetime_text(row["created_at"]),
+    )
+    system_settings = await _current_system_settings(database)
+    if not system_settings.system_enabled and user.role != "admin":
+        raise HTTPException(status_code=403, detail="System is disabled.")
+
+    return await _issue_auth_response(user, system_settings, database)
+
+
+@app.get("/api/auth/me", response_model=AuthResponse)
+async def auth_me(
+    auth: AuthContext = Depends(require_api_token),
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthResponse:
+    system_settings = await _current_system_settings(database)
+    if auth.source in {"api-token", "development"}:
+        return AuthResponse(
+            token="",
+            user=AuthUser(
+                id=auth.user_id,
+                email=auth.email,
+                display_name="Orbis Admin",
+                role="admin",
+                created_at=datetime.now(UTC).isoformat(),
+            ),
+            system=system_settings,
+        )
+
+    user = await database.get_user_by_id(auth.user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unauthorized.")
+    return AuthResponse(token="", user=user, system=system_settings)
+
+
+@app.post("/api/auth/logout")
+async def logout_user(
+    authorization: str = Header(default=""),
+    database: DatabaseRepository = Depends(get_database),
+) -> dict[str, str]:
+    token = _bearer_token(authorization)
+    if token:
+        await database.delete_session(hash_session_token(token))
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/settings", response_model=SystemSettings)
+async def get_admin_settings(
+    _: AuthContext = Depends(require_admin),
+    database: DatabaseRepository = Depends(get_database),
+) -> SystemSettings:
+    return await _current_system_settings(database)
+
+
+@app.patch("/api/admin/settings", response_model=SystemSettings)
+async def update_admin_settings(
+    payload: SystemSettingsUpdate,
+    _: AuthContext = Depends(require_admin),
+    database: DatabaseRepository = Depends(get_database),
+) -> SystemSettings:
+    current = await _current_system_settings(database)
+    updated = SystemSettings(
+        system_enabled=(
+            current.system_enabled
+            if payload.system_enabled is None
+            else payload.system_enabled
+        ),
+        register_enabled=(
+            current.register_enabled
+            if payload.register_enabled is None
+            else payload.register_enabled
+        ),
+    )
+    saved = await database.save_system_settings(updated)
+    app.state.system_settings = saved
+    return saved
+
+
+@app.get("/api/admin/users", response_model=list[AdminUser])
+async def list_admin_users(
+    _: AuthContext = Depends(require_admin),
+    database: DatabaseRepository = Depends(get_database),
+) -> list[AdminUser]:
+    return await database.list_users()
+
+
+@app.patch("/api/admin/users/{user_id}", response_model=AdminUser)
+async def update_admin_user(
+    user_id: str,
+    payload: UserRoleUpdateRequest,
+    _: AuthContext = Depends(require_admin),
+    database: DatabaseRepository = Depends(get_database),
+) -> AdminUser:
+    user = await database.update_user_role(user_id, payload.role, payload.is_active)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User was not found.")
+    return user
 
 
 @app.get("/metrics")

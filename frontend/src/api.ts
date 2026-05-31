@@ -1,6 +1,8 @@
 import type {
   AgentGraph,
   AgentProfile,
+  AdminUser,
+  AuthResponse,
   DelegationItem,
   EvaluationResult,
   MemoryItem,
@@ -17,9 +19,11 @@ const runtimeConfig = window.__ORBIS_CONFIG__ ?? {};
 const apiBaseUrl =
   runtimeConfig.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const apiToken = runtimeConfig.apiToken || import.meta.env.VITE_ORBIS_API_TOKEN || "";
+const authTokenStorageKey = "orbis_auth_token";
 
 function authHeaders(): HeadersInit {
-  return apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
+  const token = getAuthToken() || apiToken;
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function jsonHeaders(): HeadersInit {
@@ -27,6 +31,113 @@ function jsonHeaders(): HeadersInit {
     "Content-Type": "application/json",
     ...authHeaders()
   };
+}
+
+export function getAuthToken(): string {
+  return window.localStorage.getItem(authTokenStorageKey) ?? "";
+}
+
+export function setAuthToken(token: string): void {
+  window.localStorage.setItem(authTokenStorageKey, token);
+}
+
+export function clearAuthToken(): void {
+  window.localStorage.removeItem(authTokenStorageKey);
+}
+
+export function hasConfiguredApiToken(): boolean {
+  return Boolean(apiToken);
+}
+
+export async function registerUser(payload: {
+  email: string;
+  password: string;
+  display_name: string;
+}): Promise<AuthResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(error?.detail ?? "Registration failed.");
+  }
+  return response.json() as Promise<AuthResponse>;
+}
+
+export async function loginUser(payload: {
+  email: string;
+  password: string;
+}): Promise<AuthResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(error?.detail ?? "Login failed.");
+  }
+  return response.json() as Promise<AuthResponse>;
+}
+
+export async function fetchCurrentAuth(): Promise<AuthResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/auth/me`, {
+    headers: authHeaders()
+  });
+  if (!response.ok) {
+    throw new Error("Session could not be loaded.");
+  }
+  return response.json() as Promise<AuthResponse>;
+}
+
+export async function logoutUser(): Promise<void> {
+  await fetch(`${apiBaseUrl}/api/auth/logout`, {
+    method: "POST",
+    headers: authHeaders()
+  }).catch(() => undefined);
+  clearAuthToken();
+}
+
+export async function fetchAdminUsers(): Promise<AdminUser[]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/users`, {
+    headers: authHeaders()
+  });
+  if (!response.ok) {
+    throw new Error("Users could not be loaded.");
+  }
+  return response.json() as Promise<AdminUser[]>;
+}
+
+export async function updateAdminUser(
+  userId: string,
+  payload: { role: string; is_active?: boolean }
+): Promise<AdminUser> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/users/${userId}`, {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error("User could not be updated.");
+  }
+  return response.json() as Promise<AdminUser>;
+}
+
+export async function updateSystemSettings(payload: {
+  system_enabled?: boolean;
+  register_enabled?: boolean;
+}): Promise<AuthResponse["system"]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/settings`, {
+    method: "PATCH",
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error("System settings could not be saved.");
+  }
+  return response.json() as Promise<AuthResponse["system"]>;
 }
 
 export const fallbackGraph: AgentGraph = {

@@ -10,11 +10,12 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend and frontend can be deployed as separate Coolify Dockerfile services.
 - Backend owns configuration, OpenRouter API access, agent orchestration, and API contracts.
 - Backend exposes `/health` with database status/error-code diagnostics, plus `/api/agents`, `/api/runs`, `/api/runs/stream`, plan preview, agent profile, memory, template, rerun, and evaluation endpoints.
+- Backend provides database-backed register/login sessions, role-based access for `guest`, `vip`, and `admin`, and admin controls for user roles plus system/registration availability.
 - Agent graph is fixed at one supervisor and four workers: researcher, strategist, builder, reviewer.
 - Supervisor creates a structured delegation plan, workers run in parallel, emits live workflow logs, and synthesizes the final output.
 - Backend prompt templates are centralized in `backend/app/prompts.py` with strict planning, role-specific worker instructions, and compact final synthesis rules.
 - Supabase/Postgres persistence is optional and controlled by `DATABASE_URL`.
-- When database persistence is enabled, workflow runs and agent logs are stored in Postgres.
+- When database persistence is enabled, users, sessions, system settings, workflow runs, and agent logs are stored in Postgres.
 - Production mode requires bearer-token protection for protected API endpoints, strict non-local CORS origins, encrypted database TLS, and Alembic-managed schemas.
 - Runtime performance controls include workflow concurrency limits, OpenRouter HTTP pooling/retry/cache settings, database pool sizing, and Prometheus-style metrics.
 - Database schema management uses Alembic migrations and defaults to startup auto-migration via `DATABASE_AUTO_MIGRATE=true` when a database is configured.
@@ -28,11 +29,11 @@ Orbis is an agentic AI workspace with one supervisor agent coordinating four wor
 - Backend: Python, FastAPI, Pydantic, HTTPX, SQLAlchemy, asyncpg, Alembic
 - Frontend: React, TypeScript, Vite, lucide-react
 - Configuration: `.env` files, no hardcoded secrets
-- Security: environment-backed tokens, sanitized public errors, bounded runtime caches, protected metrics, strict request schemas
+- Security: database-backed user sessions, role-based admin controls, environment-backed bootstrap tokens, sanitized public errors, bounded runtime caches, protected metrics, strict request schemas
 
 ## Project Structure
 
-- `backend/app`: FastAPI app, settings, OpenRouter client, metrics, Supabase/Postgres persistence, startup migration runner, prompt builders, logged agent orchestration, capability endpoints, API schemas
+- `backend/app`: FastAPI app, settings, auth/session helpers, OpenRouter client, metrics, Supabase/Postgres persistence, startup migration runner, prompt builders, logged agent orchestration, capability endpoints, API schemas
 - `backend/Dockerfile`: Coolify-ready backend API container
 - `backend/migrations`: Alembic migrations for workflow persistence tables and indexes
 - `backend/tests`: backend test coverage

@@ -13,18 +13,29 @@ import {
 import {
   compareEvaluations,
   createMemory,
+  clearAuthToken,
   fallbackGraph,
+  fetchAdminUsers,
   fetchAgentProfiles,
   fetchAgents,
+  fetchCurrentAuth,
   fetchMemories,
   fetchTemplates,
+  hasConfiguredApiToken,
+  loginUser,
+  logoutUser,
   previewPlan,
+  registerUser,
   rerunSynthesis,
   rerunWorker,
   runWorkflowStream,
-  saveAgentProfiles
+  saveAgentProfiles,
+  setAuthToken,
+  updateAdminUser,
+  updateSystemSettings
 } from "./api";
 import { ActivityLog } from "./components/ActivityLog";
+import { AuthPanel } from "./components/AuthPanel";
 import { CapabilityControls } from "./components/CapabilityControls";
 import { OfficeGraph, VisualGraph } from "./components/GraphViews";
 import { RunSummary } from "./components/RunSummary";
@@ -32,11 +43,15 @@ import { starterTask } from "./constants";
 import type {
   AgentGraph,
   AgentProfile,
+  AdminUser,
+  AuthUser,
   DelegationItem,
   EvaluationResult,
   MemoryItem,
   OutputFormat,
+  SystemSettings,
   ToolCall,
+  UserRole,
   WorkflowLog,
   WorkflowRun,
   WorkflowTemplate
@@ -69,8 +84,18 @@ function App() {
   const [planState, setPlanState] = useState<RunState>("idle");
   const [profileSaveState, setProfileSaveState] = useState<RunState>("idle");
   const [evaluations, setEvaluations] = useState<EvaluationResult[]>([]);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authDisplayName, setAuthDisplayName] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isRunning = runState === "running";
+  const canUseProtectedApi = Boolean(authUser) || hasConfiguredApiToken();
 
   const supervisor = useMemo(
     () => graph.agents.find((agent) => agent.kind === "supervisor"),
@@ -88,10 +113,37 @@ function App() {
   }, []);
 
   useEffect(() => {
+    fetchCurrentAuth()
+      .then((auth) => {
+        if (auth.token) {
+          setAuthToken(auth.token);
+        }
+        setAuthUser(auth.user);
+        setSystemSettings(auth.system);
+      })
+      .catch(() => {
+        clearAuthToken();
+        setAuthUser(null);
+      })
+      .finally(() => setAuthReady(true));
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !canUseProtectedApi) {
+      return;
+    }
     fetchAgentProfiles().then(setProfiles).catch(() => setProfiles([]));
     fetchTemplates().then(setTemplates).catch(() => setTemplates([]));
     fetchMemories().then(setMemories).catch(() => setMemories([]));
-  }, []);
+  }, [authReady, canUseProtectedApi]);
+
+  useEffect(() => {
+    if (authUser?.role !== "admin") {
+      setAdminUsers([]);
+      return;
+    }
+    fetchAdminUsers().then(setAdminUsers).catch(() => setAdminUsers([]));
+  }, [authUser]);
 
   useEffect(() => {
     if (runState !== "success") {
@@ -101,6 +153,97 @@ function App() {
     const timeout = window.setTimeout(() => setRunState("idle"), 2200);
     return () => window.clearTimeout(timeout);
   }, [runState]);
+
+  async function handleLogin() {
+    setAuthError("");
+    try {
+      const auth = await loginUser({
+        email: authEmail.trim(),
+        password: authPassword
+      });
+      setAuthToken(auth.token);
+      setAuthUser(auth.user);
+      setSystemSettings(auth.system);
+      setAuthPassword("");
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Login failed.");
+    }
+  }
+
+  async function handleRegister() {
+    setAuthError("");
+    try {
+      const auth = await registerUser({
+        email: authEmail.trim(),
+        password: authPassword,
+        display_name: authDisplayName.trim()
+      });
+      setAuthToken(auth.token);
+      setAuthUser(auth.user);
+      setSystemSettings(auth.system);
+      setAuthPassword("");
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : "Registration failed.");
+    }
+  }
+
+  async function handleLogout() {
+    await logoutUser();
+    setAuthUser(null);
+    setProfiles([]);
+    setMemories([]);
+    setSelectedMemoryIds([]);
+    setAdminUsers([]);
+  }
+
+  async function handleRefreshAdmin() {
+    try {
+      setAdminUsers(await fetchAdminUsers());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Admin users could not load.");
+    }
+  }
+
+  async function handleSystemSettingChange(
+    field: keyof SystemSettings,
+    value: boolean
+  ) {
+    try {
+      const updated = await updateSystemSettings({ [field]: value });
+      setSystemSettings(updated);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "System setting failed.");
+    }
+  }
+
+  async function handleUserRoleChange(userId: string, role: UserRole) {
+    try {
+      const updated = await updateAdminUser(userId, { role });
+      setAdminUsers((currentUsers) =>
+        currentUsers.map((user) => (user.id === userId ? updated : user))
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Role update failed.");
+    }
+  }
+
+  async function handleUserActiveChange(userId: string, isActive: boolean) {
+    const current = adminUsers.find((user) => user.id === userId);
+    if (!current) {
+      return;
+    }
+    try {
+      const updated = await updateAdminUser(userId, {
+        role: current.role,
+        is_active: isActive
+      });
+      setAdminUsers((currentUsers) =>
+        currentUsers.map((user) => (user.id === userId ? updated : user))
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "User update failed.");
+    }
+  }
 
   function handleTaskChange(value: string) {
     setTask(value);
@@ -200,6 +343,10 @@ function App() {
   }
 
   async function handleRun() {
+    if (!canUseProtectedApi) {
+      setError("Login is required to run workflows.");
+      return;
+    }
     abortControllerRef.current?.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -338,6 +485,28 @@ function App() {
             <BrainCircuit size={24} />
           </div>
 
+          <AuthPanel
+            adminUsers={adminUsers}
+            authError={authError}
+            authMode={authMode}
+            authUser={authUser}
+            displayName={authDisplayName}
+            email={authEmail}
+            password={authPassword}
+            systemSettings={systemSettings}
+            onAuthModeChange={setAuthMode}
+            onDisplayNameChange={setAuthDisplayName}
+            onEmailChange={setAuthEmail}
+            onLogin={handleLogin}
+            onLogout={handleLogout}
+            onPasswordChange={setAuthPassword}
+            onRefreshAdmin={handleRefreshAdmin}
+            onRegister={handleRegister}
+            onSystemSettingChange={handleSystemSettingChange}
+            onUserActiveChange={handleUserActiveChange}
+            onUserRoleChange={handleUserRoleChange}
+          />
+
           <label className="task-box">
             <span>Task</span>
             <textarea
@@ -353,7 +522,7 @@ function App() {
           <div className="run-actions">
             <button
               className={`run-button ${runState}`}
-              disabled={isRunning || task.trim().length < 3}
+              disabled={isRunning || task.trim().length < 3 || !canUseProtectedApi}
               onClick={handleRun}
               type="button"
             >

@@ -10,11 +10,20 @@ WorkflowLogStatus = Literal["queued", "running", "completed", "failed", "cancell
 WorkflowRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 OutputFormat = Literal["markdown", "json", "checklist", "table", "roadmap", "prd", "test_plan"]
 ToolCallStatus = Literal["running", "completed", "failed"]
+UserRole = Literal["admin", "guest", "vip"]
 Identifier = Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")]
 NameText = Annotated[str, Field(min_length=1, max_length=120)]
 ShortText = Annotated[str, Field(min_length=1, max_length=600)]
 MediumText = Annotated[str, Field(min_length=1, max_length=1200)]
 LongText = Annotated[str, Field(min_length=1, max_length=6000)]
+EmailText = Annotated[
+    str,
+    Field(
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
 
 
 class AgentNode(BaseModel):
@@ -188,3 +197,48 @@ class HealthResponse(BaseModel):
     database_status: str = "disabled"
     database_error_code: str = ""
     model: str
+
+
+class AuthUser(BaseModel):
+    id: str
+    email: str
+    display_name: str
+    role: UserRole
+    created_at: str
+
+
+class RegisterRequest(BaseModel):
+    email: EmailText
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str = Field(default="", max_length=120)
+
+
+class LoginRequest(BaseModel):
+    email: EmailText
+    password: str = Field(min_length=1, max_length=128)
+
+
+class SystemSettings(BaseModel):
+    system_enabled: bool = True
+    register_enabled: bool = True
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: AuthUser
+    system: SystemSettings
+
+
+class SystemSettingsUpdate(BaseModel):
+    system_enabled: bool | None = None
+    register_enabled: bool | None = None
+
+
+class AdminUser(AuthUser):
+    is_active: bool = True
+    updated_at: str
+
+
+class UserRoleUpdateRequest(BaseModel):
+    role: UserRole
+    is_active: bool | None = None

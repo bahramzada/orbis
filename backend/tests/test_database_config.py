@@ -72,6 +72,8 @@ def test_database_performance_indexes_are_declared() -> None:
     assert "ix_memory_items_enabled_created" in index_names
     assert "ix_tool_calls_run_id_created" in index_names
     assert "ix_run_evaluations_run_id_created" in index_names
+    assert "ix_users_role_created" in index_names
+    assert "ix_auth_sessions_user_expires" in index_names
 
 
 def test_pool_settings_are_configurable() -> None:
@@ -162,14 +164,19 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
     second_migration = (
         "backend/migrations/versions/20260530_0002_ai_capability_tables.py"
     )
+    third_migration = "backend/migrations/versions/20260531_0003_auth_tables.py"
 
     with open(first_migration, encoding="utf-8") as migration_file:
         first_source = migration_file.read()
     with open(second_migration, encoding="utf-8") as migration_file:
         second_source = migration_file.read()
+    with open(third_migration, encoding="utf-8") as migration_file:
+        third_source = migration_file.read()
 
     assert "_table_exists" in first_source
     assert "CREATE INDEX IF NOT EXISTS" in first_source
     assert "_table_exists" in second_source
     assert "_add_column_if_missing" in second_source
     assert "CREATE INDEX IF NOT EXISTS" in second_source
+    assert "_table_exists" in third_source
+    assert "CREATE INDEX IF NOT EXISTS" in third_source

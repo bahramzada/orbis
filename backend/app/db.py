@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
 import logging
+from collections.abc import Mapping
 import ssl
-from typing import TypeAlias
+from typing import TypeAlias, cast
 from uuid import UUID
 
 from sqlalchemy import (
@@ -29,11 +30,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from app.config import Settings
 from app.metrics import timer
 from app.schemas import (
+    AdminUser,
     AgentProfile,
+    AuthUser,
     EvaluationResult,
     MemoryCreateRequest,
     MemoryItem,
     RunDetail,
+    SystemSettings,
+    UserRole,
     WorkerResult,
     WorkflowLog,
     WorkflowRun,
@@ -54,6 +59,9 @@ REQUIRED_TABLE_NAMES = frozenset(
         "memory_items",
         "tool_calls",
         "run_evaluations",
+        "users",
+        "auth_sessions",
+        "system_settings",
         "alembic_version",
     }
 )
@@ -174,9 +182,46 @@ run_evaluations = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+users = Table(
+    "users",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("email", String(320), nullable=False, unique=True),
+    Column("display_name", String(120), nullable=False),
+    Column("password_hash", Text, nullable=False),
+    Column("role", String(16), nullable=False, default="guest"),
+    Column("is_active", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+auth_sessions = Table(
+    "auth_sessions",
+    metadata,
+    Column("token_hash", String(64), primary_key=True),
+    Column(
+        "user_id",
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+)
+
+system_settings = Table(
+    "system_settings",
+    metadata,
+    Column("key", String(80), primary_key=True),
+    Column("value", Text, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 Index("ix_memory_items_enabled_created", memory_items.c.enabled, memory_items.c.created_at)
 Index("ix_tool_calls_run_id_created", tool_calls.c.run_id, tool_calls.c.created_at)
 Index("ix_run_evaluations_run_id_created", run_evaluations.c.run_id, run_evaluations.c.created_at)
+Index("ix_users_role_created", users.c.role, users.c.created_at.desc())
+Index("ix_auth_sessions_user_expires", auth_sessions.c.user_id, auth_sessions.c.expires_at)
 
 
 class DatabaseRepository:
@@ -237,6 +282,212 @@ class DatabaseRepository:
     async def close(self) -> None:
         if self._engine is not None:
             await self._engine.dispose()
+
+    async def get_system_settings(self) -> SystemSettings:
+        if self._engine is None:
+            return SystemSettings()
+
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(select(system_settings))
+                values = {row["key"]: row["value"] for row in result.mappings()}
+            return SystemSettings(
+                system_enabled=_text_to_bool(values.get("system_enabled"), True),
+                register_enabled=_text_to_bool(values.get("register_enabled"), True),
+            )
+        except Exception as exc:
+            self._disable_after_error("get_system_settings", exc)
+            return SystemSettings()
+
+    async def save_system_settings(self, settings: SystemSettings) -> SystemSettings:
+        if self._engine is None:
+            return settings
+
+        now = _now()
+        values = {
+            "system_enabled": _bool_to_text(settings.system_enabled),
+            "register_enabled": _bool_to_text(settings.register_enabled),
+        }
+        try:
+            async with self._engine.begin() as connection:
+                for key, value in values.items():
+                    await connection.execute(
+                        delete(system_settings).where(system_settings.c.key == key)
+                    )
+                    await connection.execute(
+                        insert(system_settings).values(
+                            key=key,
+                            value=value,
+                            updated_at=now,
+                        )
+                    )
+            return settings
+        except Exception as exc:
+            self._disable_after_error("save_system_settings", exc)
+            return settings
+
+    async def create_user(
+        self,
+        user_id: str,
+        email: str,
+        display_name: str,
+        password_hash: str,
+    ) -> AuthUser | None:
+        if self._engine is None:
+            return None
+
+        now = _now()
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    insert(users).values(
+                        id=user_id,
+                        email=email,
+                        display_name=display_name,
+                        password_hash=password_hash,
+                        role="guest",
+                        is_active=True,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            return AuthUser(
+                id=user_id,
+                email=email,
+                display_name=display_name,
+                role="guest",
+                created_at=now.isoformat(),
+            )
+        except Exception as exc:
+            self._disable_after_error("create_user", exc)
+            return None
+
+    async def get_user_by_email(self, email: str) -> dict[str, object] | None:
+        if self._engine is None:
+            return None
+
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(
+                    select(users).where(users.c.email == email)
+                )
+                row = result.mappings().first()
+            return dict(row) if row is not None else None
+        except Exception as exc:
+            self._disable_after_error("get_user_by_email", exc)
+            return None
+
+    async def get_user_by_id(self, user_id: str) -> AuthUser | None:
+        if self._engine is None:
+            return None
+
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(
+                    select(users).where(users.c.id == user_id)
+                )
+                row = result.mappings().first()
+            return _row_to_auth_user(dict(row)) if row is not None else None
+        except Exception as exc:
+            self._disable_after_error("get_user_by_id", exc)
+            return None
+
+    async def list_users(self) -> list[AdminUser]:
+        if self._engine is None:
+            return []
+
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(
+                    select(users).order_by(users.c.created_at.desc())
+                )
+                rows = result.mappings().all()
+            return [_row_to_admin_user(dict(row)) for row in rows]
+        except Exception as exc:
+            self._disable_after_error("list_users", exc)
+            return []
+
+    async def update_user_role(
+        self,
+        user_id: str,
+        role: UserRole,
+        is_active: bool | None,
+    ) -> AdminUser | None:
+        if self._engine is None:
+            return None
+
+        values: dict[str, object] = {"role": role, "updated_at": _now()}
+        if is_active is not None:
+            values["is_active"] = is_active
+
+        try:
+            async with self._engine.begin() as connection:
+                result = await connection.execute(
+                    update(users)
+                    .where(users.c.id == user_id)
+                    .values(**values)
+                    .returning(users)
+                )
+                row = result.mappings().first()
+            return _row_to_admin_user(dict(row)) if row is not None else None
+        except Exception as exc:
+            self._disable_after_error("update_user_role", exc)
+            return None
+
+    async def create_session(
+        self,
+        token_hash: str,
+        user_id: str,
+        expires_at: datetime,
+    ) -> None:
+        if self._engine is None:
+            return
+
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    insert(auth_sessions).values(
+                        token_hash=token_hash,
+                        user_id=user_id,
+                        created_at=_now(),
+                        expires_at=expires_at,
+                    )
+                )
+        except Exception as exc:
+            self._disable_after_error("create_session", exc)
+
+    async def get_user_by_session(self, token_hash: str) -> AuthUser | None:
+        if self._engine is None:
+            return None
+
+        try:
+            async with self._engine.connect() as connection:
+                result = await connection.execute(
+                    select(users)
+                    .select_from(
+                        users.join(auth_sessions, users.c.id == auth_sessions.c.user_id)
+                    )
+                    .where(auth_sessions.c.token_hash == token_hash)
+                    .where(auth_sessions.c.expires_at > _now())
+                    .where(users.c.is_active.is_(True))
+                )
+                row = result.mappings().first()
+            return _row_to_auth_user(dict(row)) if row is not None else None
+        except Exception as exc:
+            self._disable_after_error("get_user_by_session", exc)
+            return None
+
+    async def delete_session(self, token_hash: str) -> None:
+        if self._engine is None:
+            return
+
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(auth_sessions).where(auth_sessions.c.token_hash == token_hash)
+                )
+        except Exception as exc:
+            self._disable_after_error("delete_session", exc)
 
     async def save_workflow_run(self, run: WorkflowRun) -> None:
         if self._engine is None:
@@ -581,6 +832,46 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _row_to_auth_user(row: Mapping[str, object]) -> AuthUser:
+    return AuthUser(
+        id=str(row["id"]),
+        email=str(row["email"]),
+        display_name=str(row["display_name"]),
+        role=cast_user_role(str(row["role"])),
+        created_at=_datetime_to_text(row["created_at"]),
+    )
+
+
+def _row_to_admin_user(row: Mapping[str, object]) -> AdminUser:
+    return AdminUser(
+        **_row_to_auth_user(row).model_dump(),
+        is_active=bool(row["is_active"]),
+        updated_at=_datetime_to_text(row["updated_at"]),
+    )
+
+
+def _datetime_to_text(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def cast_user_role(value: str) -> UserRole:
+    if value in {"admin", "guest", "vip"}:
+        return cast(UserRole, value)
+    return "guest"
+
+
+def _text_to_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bool_to_text(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def _safe_db_error(exc: Exception) -> str:

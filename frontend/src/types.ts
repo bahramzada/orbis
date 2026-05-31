@@ -144,3 +144,29 @@ export type RunOptions = {
   output_format?: OutputFormat;
   enable_review_phase?: boolean;
 };
+
+export type UserRole = "admin" | "guest" | "vip";
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: UserRole;
+  created_at: string;
+};
+
+export type AdminUser = AuthUser & {
+  is_active: boolean;
+  updated_at: string;
+};
+
+export type SystemSettings = {
+  system_enabled: boolean;
+  register_enabled: boolean;
+};
+
+export type AuthResponse = {
+  token: string;
+  user: AuthUser;
+  system: SystemSettings;
+};

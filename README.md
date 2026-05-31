@@ -162,9 +162,31 @@ OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=openai/gpt-4.1-mini
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 CORS_ALLOW_CREDENTIALS=false
+AUTH_SESSION_TTL_HOURS=720
 ```
 
-When `ORBIS_API_TOKEN` is set, protected API calls must send `Authorization: Bearer <token>`. In production, `APP_ENV=production` requires this token and rejects local CORS origins.
+When `ORBIS_API_TOKEN` is set, protected API calls can still send `Authorization: Bearer <token>` for server-side or bootstrap admin access. For public frontend deployments, keep `VITE_ORBIS_API_TOKEN` empty and use database-backed login sessions instead.
+
+## Authentication
+
+Orbis supports database-backed register/login once `DATABASE_URL` is configured. New users are created as `guest`; admins can promote users to `vip` or `admin` from the Admin Panel or directly in Postgres.
+
+Admin controls include:
+
+- user role changes: `guest`, `vip`, `admin`
+- user active/disabled state
+- system enabled/disabled
+- registration enabled/disabled
+
+For the first admin on a fresh database, register normally, then promote that account in Postgres:
+
+```sql
+UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
+```
+
+In production, `APP_ENV=production` requires `ORBIS_API_TOKEN` as a secure bootstrap/server token and rejects local CORS origins.
+
+For local development without a configured database, Orbis keeps a no-token development admin fallback. Once `DATABASE_URL` is configured, normal user sessions are required unless the bootstrap bearer token is supplied.
 
 Useful runtime controls:
 
@@ -213,6 +235,9 @@ Main persisted entities:
 - `memory_items`
 - `tool_calls`
 - `run_evaluations`
+- `users`
+- `auth_sessions`
+- `system_settings`
 
 ## API Surface
 
@@ -220,6 +245,13 @@ Main persisted entities:
 | --- | --- | --- |
 | `GET` | `/health` | Service, provider, database, and model health. |
 | `GET` | `/metrics` | Prometheus-style metrics, protected when a metrics/API token is configured. |
+| `POST` | `/api/auth/register` | Create a guest user and session. |
+| `POST` | `/api/auth/login` | Create a session for an existing active user. |
+| `GET` | `/api/auth/me` | Return current authenticated user and system settings. |
+| `POST` | `/api/auth/logout` | Revoke the current session token. |
+| `GET` / `PATCH` | `/api/admin/settings` | Admin-only system and registration switches. |
+| `GET` | `/api/admin/users` | Admin-only user list. |
+| `PATCH` | `/api/admin/users/{user_id}` | Admin-only role and active-state updates. |
 | `GET` | `/api/agents` | Default supervisor-worker graph. |
 | `GET` / `PUT` | `/api/agent-profiles` | Agent Studio profile configuration. |
 | `GET` | `/api/templates` | Workflow template presets. |
@@ -235,7 +267,7 @@ Main persisted entities:
 
 `/health` includes `database_status` and a non-secret `database_error_code` so deployments can distinguish disabled persistence from connection, schema, SSL, DNS, or auth failures.
 
-All state-changing endpoints and run/history/memory/profile details are protected when `ORBIS_API_TOKEN` is configured. Keep `/health` public for uptime checks.
+State-changing endpoints and run/history/memory/profile details require either a valid user session or the server bootstrap token. Keep `/health` public for uptime checks.
 
 ## Validation
 
@@ -268,6 +300,7 @@ npm run build
 |   |   |-- metrics.py            # lightweight metrics registry
 |   |   |-- openrouter_client.py  # OpenRouter HTTP client
 |   |   |-- prompts.py            # centralized prompt builders
+|   |   |-- security.py           # password hashing and session token helpers
 |   |   `-- schemas.py            # API and orchestration models
 |   |-- migrations                # Alembic schema migrations
 |   `-- tests                     # backend regression tests

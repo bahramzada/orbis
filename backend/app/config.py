@@ -91,6 +91,7 @@ class Settings(BaseSettings):
         alias="OTEL_EXPORTER_OTLP_ENDPOINT",
     )
     sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
+    auth_session_ttl_hours: int = Field(default=720, alias="AUTH_SESSION_TTL_HOURS")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env"),
