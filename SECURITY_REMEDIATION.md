@@ -40,7 +40,7 @@ This document records the targeted hardening work for the public-internet threat
 - **Severity:** Medium
 - **Before:** Repeated login/register failures were not locally throttled.
 - **Risk:** Credential stuffing and user-enumeration pressure.
-- **After:** IP+email keyed in-memory rate limiting, generic login failure messages, and bounded limiter state.
+- **After:** IP+email keyed rate limiting, generic login failure messages, bounded limiter state, and Postgres-backed counters in production.
 - **Changed files:** `backend/app/main.py`, `backend/app/config.py`
 
 ### Admin Access-Control Footguns
@@ -100,3 +100,37 @@ uv tool run detect-secrets scan --all-files --exclude-files '(^backend/.venv/|^f
 ```
 
 Local `.env`, virtualenv, package caches, and `node_modules` are excluded from the secret scan because they are local runtime artifacts rather than source files. If a real `.env` was ever committed or shared, rotate those secrets immediately.
+
+## 2026-06-09 STRIDE Remediation Addendum
+
+### Bearer Token Admin Bypass Removal
+
+- **Severity:** Critical
+- **Before:** `ORBIS_API_TOKEN` could authorize browser-facing user/admin API paths.
+- **Risk:** Exposure of the shared token allowed broad data access and admin mutation.
+- **After:** Browser and admin endpoints require cookie sessions; `ORBIS_API_TOKEN` is scoped to explicit service diagnostics such as `/api/service/health` and every service-token use is audited.
+- **Changed files:** `backend/app/main.py`, `backend/app/schemas.py`, `backend/tests/test_security_hardening.py`, `README.md`, `COOLIFY_DEPLOYMENT.md`
+
+### Per-User Data Isolation
+
+- **Severity:** High
+- **Before:** workflow runs, memories, and agent profile edits were global.
+- **Risk:** one authenticated user could read or mutate another user's operational data.
+- **After:** new writes are bound to `owner_user_id`; user-facing run, memory, rerun, evaluation, and profile endpoints filter by current user; legacy ownerless run/memory data is visible only through admin endpoints.
+- **Changed files:** `backend/app/main.py`, `backend/app/db.py`, `backend/app/schemas.py`, `frontend/src/types.ts`, `backend/migrations/versions/20260609_0005_stride_remediation.py`
+
+### Audit Events And Postgres Rate Limits
+
+- **Severity:** High
+- **Before:** security-relevant events and rate-limit counters were process-local or not persisted.
+- **Risk:** multi-instance production deployments could miss abuse patterns and lose audit trails on restart.
+- **After:** `security_audit_events` stores sanitized auth/admin/service/workflow events, and `rate_limit_counters` backs auth plus workflow hourly/daily quotas in Postgres.
+- **Changed files:** `backend/app/config.py`, `backend/app/db.py`, `backend/app/main.py`, `backend/.env.example`, `backend/.env.coolify.example`
+
+### Health Disclosure Reduction
+
+- **Severity:** Medium
+- **Before:** public `/health` exposed provider/database/model diagnostics.
+- **Risk:** unauthenticated users could fingerprint deployment state.
+- **After:** `/health` returns only `{ "status": "ok" }`; detailed diagnostics moved to `/api/admin/health` and service-token `/api/service/health`.
+- **Changed files:** `backend/app/main.py`, `backend/app/schemas.py`, `frontend/src/api.ts`, `frontend/src/types.ts`

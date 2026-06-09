@@ -68,6 +68,7 @@ export type WorkflowLog = {
 
 export type WorkflowRun = {
   run_id: string;
+  owner_user_id?: string | null;
   task: string;
   model: string;
   status: WorkflowRunStatus;
@@ -80,6 +81,16 @@ export type WorkflowRun = {
   duration_ms: number;
   estimated_tokens: number;
   estimated_cost_usd: number;
+};
+
+export type WorkflowRunSummary = {
+  run_id: string;
+  task: string;
+  model: string;
+  status: string;
+  created_at: string;
+  completed_at: string;
+  owner_user_id?: string | null;
 };
 
 export type AgentProfile = {
@@ -104,6 +115,7 @@ export type WorkflowTemplate = {
 
 export type MemoryItem = {
   id: string;
+  owner_user_id?: string | null;
   title: string;
   category: string;
   content: string;
@@ -163,6 +175,29 @@ export type AdminUser = AuthUser & {
 export type SystemSettings = {
   system_enabled: boolean;
   register_enabled: boolean;
+};
+
+export type AdminHealthResponse = {
+  status: string;
+  openrouter_configured: boolean;
+  database_configured: boolean;
+  database_status: string;
+  database_error_code: string;
+  model: string;
+};
+
+export type AuditEvent = {
+  id: string;
+  actor_user_id?: string | null;
+  actor_email: string;
+  actor_role: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  ip_address: string;
+  user_agent: string;
+  detail: Record<string, unknown>;
+  created_at: string;
 };
 
 export type AuthResponse = {

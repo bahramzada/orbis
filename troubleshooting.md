@@ -118,3 +118,10 @@
 - **Error:** Deploy logs stopped at Alembic `Running upgrade ...` and the container healthcheck returned `ConnectionRefusedError` because Uvicorn had not opened the API port yet.
 - **Failed Attempts:** Treating the issue as a manual Coolify operation left repeated deploys vulnerable to the same startup timing problem.
 - **Solution:** Moved Docker auto-migration into `backend/docker-entrypoint.sh` so migrations run before Uvicorn, export `DATABASE_AUTO_MIGRATE=false` for the served process, added a 300-second Docker healthcheck start period, added Postgres advisory migration locking plus lock/statement timeouts, and fixed schema verification so required column inspection happens while the database connection is open.
+
+## Local Validation Dependencies Missing
+
+- **Context/Component:** Backend/frontend validation, local workspace tooling
+- **Error:** `python -m pytest backend/tests/test_security_hardening.py -q` failed because global Python lacks FastAPI; `python -m ruff --version` and `python -m mypy --version` failed because those modules are not installed; `npm run build` failed because `frontend/node_modules` is absent and `tsc` is not available.
+- **Failed Attempts:** Tried the system Python, the bundled Codex Python runtime, and the existing frontend `npm run build` script without installing dependencies.
+- **Solution:** Used `python -m compileall backend/app backend/tests backend/migrations` for syntax verification, cleaned generated cache artifacts, and left full pytest/ruff/mypy/npm validation pending until project dependencies are installed.

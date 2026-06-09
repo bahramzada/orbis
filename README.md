@@ -148,7 +148,7 @@ Deploy backend and frontend as separate Coolify apps.
 | Backend API | `backend` | `backend/Dockerfile` | `8000` | `/health` |
 | Frontend UI | `frontend` | `frontend/Dockerfile` | `80` | `/` |
 
-Use [COOLIFY_DEPLOYMENT.md](/Users/raullte/Desktop/Projects/Orbis/COOLIFY_DEPLOYMENT.md) for the exact environment variables and first-run migration command.
+Use [COOLIFY_DEPLOYMENT.md](COOLIFY_DEPLOYMENT.md) for the exact environment variables and first-run migration command.
 
 ## Configuration
 
@@ -167,6 +167,11 @@ AUTH_SESSION_CLEANUP_INTERVAL_SECONDS=900
 AUTH_SESSION_TOUCH_INTERVAL_SECONDS=300
 AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
 AUTH_RATE_LIMIT_WINDOW_SECONDS=900
+AUTH_RATE_LIMIT_BACKEND=postgres
+WORKFLOW_RATE_LIMIT_PER_HOUR=20
+WORKFLOW_RATE_LIMIT_PER_DAY=100
+WORKFLOW_MAX_CONCURRENT_PER_USER=1
+RATE_LIMIT_CLEANUP_INTERVAL_SECONDS=3600
 SESSION_COOKIE_NAME=orbis_session
 SESSION_COOKIE_SECURE=false
 SESSION_COOKIE_SAMESITE=lax
@@ -174,7 +179,7 @@ SESSION_COOKIE_DOMAIN=
 SYSTEM_SETTINGS_CACHE_TTL_SECONDS=30
 ```
 
-When `ORBIS_API_TOKEN` is set, server-side or bootstrap admin clients can send `Authorization: Bearer <token>`. The public frontend never consumes this token; browser users authenticate through an `HttpOnly` cookie session and CSRF token.
+When `ORBIS_API_TOKEN` is set, it is accepted only by explicit service/diagnostic endpoints such as `/api/service/health`; it does not grant browser user or admin permissions. The public frontend never consumes this token; browser users authenticate through an `HttpOnly` cookie session and CSRF token.
 
 ## Authentication
 
@@ -253,10 +258,13 @@ Main persisted entities:
 - `workflow_runs`
 - `workflow_logs`
 - `agent_profiles`
+- `user_agent_profiles`
 - `workflow_templates`
 - `memory_items`
 - `tool_calls`
 - `run_evaluations`
+- `security_audit_events`
+- `rate_limit_counters`
 - `users`
 - `auth_sessions`
 - `system_settings`
@@ -265,15 +273,20 @@ Main persisted entities:
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Service, provider, database, and model health. |
+| `GET` | `/health` | Minimal public uptime response: `{ "status": "ok" }`. |
 | `GET` | `/metrics` | Prometheus-style metrics, protected when a metrics/API token is configured. |
+| `GET` | `/api/service/health` | Service-token protected health diagnostics. |
 | `POST` | `/api/auth/register` | Create a guest user and session. |
 | `POST` | `/api/auth/login` | Create a session for an existing active user. |
 | `GET` | `/api/auth/me` | Return current authenticated user and system settings. |
 | `POST` | `/api/auth/logout` | Revoke the current cookie session. |
+| `GET` | `/api/admin/health` | Admin-only provider, database, and model health. |
 | `GET` / `PATCH` | `/api/admin/settings` | Admin-only system and registration switches. |
 | `GET` | `/api/admin/users` | Admin-only user list. |
 | `PATCH` | `/api/admin/users/{user_id}` | Admin-only role and active-state updates. |
+| `GET` | `/api/admin/runs` | Admin-only all-user and legacy ownerless run summaries. |
+| `GET` | `/api/admin/memories` | Admin-only all-user and legacy ownerless memories. |
+| `GET` | `/api/admin/audit-events` | Admin-only security audit event list. |
 | `GET` | `/api/agents` | Default supervisor-worker graph. |
 | `GET` / `PUT` | `/api/agent-profiles` | Agent Studio profile configuration. |
 | `GET` | `/api/templates` | Workflow template presets. |
@@ -287,9 +300,9 @@ Main persisted entities:
 | `POST` | `/api/runs/{run_id}/rerun/synthesis` | Rerun only the final synthesis. |
 | `POST` | `/api/evaluations/compare` | Score one or more runs with a lightweight rubric. |
 
-`/health` includes `database_status` and a non-secret `database_error_code` so deployments can distinguish connection, schema, SSL, DNS, or auth failures.
+Detailed health fields such as `database_status`, `database_error_code`, model, and OpenRouter configuration are available from `/api/admin/health` or `/api/service/health`, not public `/health`.
 
-State-changing browser requests require a valid cookie session plus `X-CSRF-Token`; server-side bootstrap calls can use `Authorization: Bearer <ORBIS_API_TOKEN>`. Keep `/health` public for uptime checks.
+State-changing browser requests require a valid cookie session plus `X-CSRF-Token`. `Authorization: Bearer <ORBIS_API_TOKEN>` is service-scoped only and is audited on use.
 
 ## Validation
 

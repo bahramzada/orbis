@@ -35,9 +35,11 @@ from app.security import (
     verify_password,
 )
 from app.schemas import (
+    AdminHealthResponse,
     AdminUser,
     AgentGraphResponse,
     AgentProfile,
+    AuditEvent,
     AuthResponse,
     AuthUser,
     DelegationItem,
@@ -85,14 +87,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.system_settings_cache_database_id = id(database)
     app.state.last_session_cleanup_at = 0.0
     app.state.last_session_cleanup_database_id = id(database)
+    app.state.last_rate_limit_cleanup_at = 0.0
+    app.state.last_rate_limit_cleanup_database_id = id(database)
     app.state.openrouter_client = client
     app.state.database = database
     app.state.orchestrator = AgentOrchestrator(client, registry, settings)
     app.state.agent_profiles = await _load_agent_profiles(database)
-    app.state.memories = await database.list_memories()
+    app.state.memories = await database.list_memories(include_all=True)
     app.state.templates = await _load_templates(database)
     app.state.recent_runs = OrderedDict()
     app.state.evaluations = OrderedDict()
+    app.state.active_workflow_users = {}
     yield
     await client.close()
     await database.close()
@@ -227,9 +232,8 @@ class StreamError:
         self.detail = detail
 
 
-async def require_api_token(
+async def require_user_session(
     request: Request,
-    authorization: str = Header(default=""),
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthContext:
     expected = settings.orbis_api_token.strip()
@@ -243,15 +247,6 @@ async def require_api_token(
             email="development@orbis.local",
             role="admin",
             source="development",
-        )
-
-    token = _bearer_token(authorization)
-    if expected and token and secrets.compare_digest(token, expected):
-        return AuthContext(
-            user_id="api-token",
-            email="api-token@orbis.local",
-            role="admin",
-            source="api-token",
         )
 
     session_token = request.cookies.get(settings.session_cookie_name, "")
@@ -283,6 +278,43 @@ async def require_api_token(
     )
 
 
+async def require_api_token(
+    request: Request,
+    authorization: str = Header(default=""),
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthContext:
+    return await require_user_session(request, database)
+
+
+async def require_service_token(
+    request: Request,
+    authorization: str = Header(default=""),
+    database: DatabaseRepository = Depends(get_database),
+) -> AuthContext:
+    expected = settings.orbis_api_token.strip()
+    token = _bearer_token(authorization)
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized.",
+        )
+    auth = AuthContext(
+        user_id="service-token",
+        email="service-token@orbis.local",
+        role="admin",
+        source="service-token",
+    )
+    await _record_audit_event(
+        database,
+        request,
+        "service_token.used",
+        auth=auth,
+        resource_type="service",
+        resource_id=request.url.path,
+    )
+    return auth
+
+
 def require_metrics_token(authorization: str = Header(default="")) -> None:
     expected = settings.effective_metrics_token
     if not expected and not settings.is_production:
@@ -309,7 +341,7 @@ def _bearer_token(authorization: str) -> str:
 
 
 async def require_admin(
-    auth: AuthContext = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
 ) -> AuthContext:
     if not auth.is_admin:
         raise HTTPException(status_code=403, detail="Admin access is required.")
@@ -318,11 +350,19 @@ async def require_admin(
 
 async def require_state_changing_auth(
     request: Request,
-    auth: AuthContext = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     x_csrf_token: str = Header(default="", alias="X-CSRF-Token"),
 ) -> AuthContext:
     if auth.source == "session" and not verify_csrf_token(x_csrf_token, auth.csrf_hash):
         raise HTTPException(status_code=403, detail="Invalid CSRF token.")
+    return auth
+
+
+async def require_admin_session(
+    auth: AuthContext = Depends(require_user_session),
+) -> AuthContext:
+    if not auth.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access is required.")
     return auth
 
 
@@ -385,6 +425,34 @@ async def _cleanup_expired_sessions(
     await database.delete_expired_sessions()
     app.state.last_session_cleanup_at = now
     app.state.last_session_cleanup_database_id = database_id
+
+
+async def _cleanup_expired_rate_limits(
+    database: DatabaseRepository,
+    *,
+    force: bool = False,
+) -> None:
+    if not database.is_configured or not hasattr(database, "delete_expired_rate_limits"):
+        return
+    interval = max(0, settings.rate_limit_cleanup_interval_seconds)
+    now = monotonic()
+    database_id = id(database)
+    last_cleanup = float(getattr(app.state, "last_rate_limit_cleanup_at", 0.0) or 0.0)
+    last_cleanup_database_id = getattr(
+        app.state,
+        "last_rate_limit_cleanup_database_id",
+        None,
+    )
+    if (
+        not force
+        and last_cleanup_database_id == database_id
+        and interval > 0
+        and now - last_cleanup < interval
+    ):
+        return
+    await database.delete_expired_rate_limits()
+    app.state.last_rate_limit_cleanup_at = now
+    app.state.last_rate_limit_cleanup_database_id = database_id
 
 
 async def _issue_auth_response(
@@ -469,11 +537,32 @@ def _request_user_agent(request: Request) -> str:
 
 
 def _auth_rate_limit_key(request: Request, email: str) -> str:
-    return f"{_request_ip(request)}:{email.strip().lower()}"
+    return f"auth:{_request_ip(request)}:{email.strip().lower()}"
 
 
-def _ensure_auth_rate_limit(request: Request, email: str) -> None:
+async def _ensure_auth_rate_limit(
+    request: Request,
+    email: str,
+    database: DatabaseRepository,
+) -> None:
     key = _auth_rate_limit_key(request, email)
+    if (
+        settings.auth_rate_limit_backend.strip().lower() == "postgres"
+        and database.is_configured
+        and hasattr(database, "increment_rate_limit")
+    ):
+        await _cleanup_expired_rate_limits(database)
+        count = await database.increment_rate_limit(
+            key,
+            window_seconds=settings.auth_rate_limit_window_seconds,
+        )
+        if count > settings.auth_rate_limit_max_attempts:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication attempts. Try again later.",
+            )
+        return
+
     now = monotonic()
     window_start = now - settings.auth_rate_limit_window_seconds
     failures = [value for value in _auth_failures.get(key, []) if value >= window_start]
@@ -490,7 +579,17 @@ def _ensure_auth_rate_limit(request: Request, email: str) -> None:
         )
 
 
-def _record_auth_failure(request: Request, email: str) -> None:
+async def _record_auth_failure(
+    request: Request,
+    email: str,
+    database: DatabaseRepository,
+) -> None:
+    if (
+        settings.auth_rate_limit_backend.strip().lower() == "postgres"
+        and database.is_configured
+        and hasattr(database, "reset_rate_limit")
+    ):
+        return
     key = _auth_rate_limit_key(request, email)
     now = monotonic()
     window_start = now - settings.auth_rate_limit_window_seconds
@@ -502,8 +601,19 @@ def _record_auth_failure(request: Request, email: str) -> None:
         _auth_failures.popitem(last=False)
 
 
-def _clear_auth_failures(request: Request, email: str) -> None:
-    _auth_failures.pop(_auth_rate_limit_key(request, email), None)
+async def _clear_auth_failures(
+    request: Request,
+    email: str,
+    database: DatabaseRepository,
+) -> None:
+    key = _auth_rate_limit_key(request, email)
+    if (
+        settings.auth_rate_limit_backend.strip().lower() == "postgres"
+        and database.is_configured
+    ):
+        await database.reset_rate_limit(key)
+        return
+    _auth_failures.pop(key, None)
 
 
 def _ensure_admin_user_update_allowed(
@@ -533,12 +643,117 @@ def _ensure_admin_user_update_allowed(
         )
 
 
+async def _record_audit_event(
+    database: DatabaseRepository,
+    request: Request,
+    action: str,
+    *,
+    auth: AuthContext | None = None,
+    resource_type: str = "",
+    resource_id: str = "",
+    detail: dict[str, object] | None = None,
+) -> None:
+    if not hasattr(database, "record_audit_event"):
+        return
+    await database.record_audit_event(
+        event_id=str(uuid4()),
+        actor_user_id=auth.user_id if auth else None,
+        actor_email=auth.email if auth else "",
+        actor_role=auth.role if auth else "",
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        ip_address=_request_ip(request),
+        user_agent=_request_user_agent(request),
+        detail=detail or {},
+    )
+
+
+async def _ensure_workflow_quota(
+    auth: AuthContext,
+    database: DatabaseRepository,
+    *,
+    kind: str,
+) -> None:
+    if (
+        not database.is_configured
+        or auth.source == "development"
+        or not hasattr(database, "increment_rate_limit")
+    ):
+        return
+
+    await _cleanup_expired_rate_limits(database)
+    hour_limit = settings.workflow_rate_limit_per_hour
+    day_limit = settings.workflow_rate_limit_per_day
+    if hour_limit > 0:
+        count = await database.increment_rate_limit(
+            f"workflow:{kind}:hour:{auth.user_id}",
+            window_seconds=3600,
+        )
+        if count > hour_limit:
+            raise HTTPException(status_code=429, detail="Hourly workflow quota exceeded.")
+    if day_limit > 0:
+        count = await database.increment_rate_limit(
+            f"workflow:{kind}:day:{auth.user_id}",
+            window_seconds=86_400,
+        )
+        if count > day_limit:
+            raise HTTPException(status_code=429, detail="Daily workflow quota exceeded.")
+
+
+def _begin_user_workflow(auth: AuthContext) -> None:
+    if auth.source == "development":
+        return
+    limit = settings.workflow_max_concurrent_per_user
+    if limit <= 0:
+        return
+    active = cast(dict[str, int], app.state.active_workflow_users)
+    current = active.get(auth.user_id, 0)
+    if current >= limit:
+        raise HTTPException(
+            status_code=429,
+            detail="Concurrent workflow limit exceeded.",
+        )
+    active[auth.user_id] = current + 1
+
+
+def _finish_user_workflow(auth: AuthContext) -> None:
+    active = cast(dict[str, int], app.state.active_workflow_users)
+    current = active.get(auth.user_id, 0)
+    if current <= 1:
+        active.pop(auth.user_id, None)
+    else:
+        active[auth.user_id] = current - 1
+
+
 @app.get("/health", response_model=HealthResponse)
-async def health(
+async def health() -> HealthResponse:
+    return HealthResponse(status="ok")
+
+
+@app.get("/api/admin/health", response_model=AdminHealthResponse)
+async def admin_health(
+    _: AuthContext = Depends(require_admin_session),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
-) -> HealthResponse:
-    return HealthResponse(
+) -> AdminHealthResponse:
+    return AdminHealthResponse(
+        status="ok",
+        openrouter_configured=client.is_configured,
+        database_configured=database.is_persistence_configured,
+        database_status=database.status,
+        database_error_code=database.error_code,
+        model=client.model,
+    )
+
+
+@app.get("/api/service/health", response_model=AdminHealthResponse)
+async def service_health(
+    _: AuthContext = Depends(require_service_token),
+    client: OpenRouterClient = Depends(get_client),
+    database: DatabaseRepository = Depends(get_database),
+) -> AdminHealthResponse:
+    return AdminHealthResponse(
         status="ok",
         openrouter_configured=client.is_configured,
         database_configured=database.is_persistence_configured,
@@ -566,10 +781,16 @@ async def register_user(
         raise HTTPException(status_code=403, detail="Registration is disabled.")
 
     email = str(payload.email).strip().lower()
-    _ensure_auth_rate_limit(request, email)
+    await _ensure_auth_rate_limit(request, email, database)
     existing = await database.get_user_by_email(email)
     if existing is not None:
-        _record_auth_failure(request, email)
+        await _record_auth_failure(request, email, database)
+        await _record_audit_event(
+            database,
+            request,
+            "auth.register_failed",
+            detail={"reason": "duplicate_email", "email": email},
+        )
         raise HTTPException(
             status_code=409,
             detail="Registration could not be completed.",
@@ -583,10 +804,31 @@ async def register_user(
         hash_password(payload.password),
     )
     if user is None:
-        _record_auth_failure(request, email)
+        await _record_auth_failure(request, email, database)
+        await _record_audit_event(
+            database,
+            request,
+            "auth.register_failed",
+            detail={"reason": "create_user_failed", "email": email},
+        )
         raise HTTPException(status_code=500, detail="Registration could not be completed.")
 
-    _clear_auth_failures(request, email)
+    await _clear_auth_failures(request, email, database)
+    await _record_audit_event(
+        database,
+        request,
+        "auth.register_succeeded",
+        auth=AuthContext(
+            user_id=user.id,
+            email=user.email,
+            role=user.role,
+            source="session",
+            display_name=user.display_name,
+            created_at=user.created_at,
+        ),
+        resource_type="user",
+        resource_id=user.id,
+    )
     return await _issue_auth_response(user, system_settings, database, response, request)
 
 
@@ -602,13 +844,25 @@ async def login_user(
 
     await _cleanup_expired_sessions(database)
     email = str(payload.email).strip().lower()
-    _ensure_auth_rate_limit(request, email)
+    await _ensure_auth_rate_limit(request, email, database)
     row = await database.get_user_by_email(email)
     if row is None or not verify_password(payload.password, str(row["password_hash"])):
-        _record_auth_failure(request, email)
+        await _record_auth_failure(request, email, database)
+        await _record_audit_event(
+            database,
+            request,
+            "auth.login_failed",
+            detail={"reason": "invalid_credentials", "email": email},
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not bool(row["is_active"]):
-        _record_auth_failure(request, email)
+        await _record_auth_failure(request, email, database)
+        await _record_audit_event(
+            database,
+            request,
+            "auth.login_failed",
+            detail={"reason": "inactive_user", "email": email},
+        )
         raise HTTPException(status_code=403, detail="Invalid email or password.")
 
     user = AuthUser(
@@ -625,18 +879,33 @@ async def login_user(
     if password_needs_rehash(str(row["password_hash"])):
         await database.update_password_hash(user.id, hash_password(payload.password))
 
-    _clear_auth_failures(request, email)
+    await _clear_auth_failures(request, email, database)
+    await _record_audit_event(
+        database,
+        request,
+        "auth.login_succeeded",
+        auth=AuthContext(
+            user_id=user.id,
+            email=user.email,
+            role=user.role,
+            source="session",
+            display_name=user.display_name,
+            created_at=user.created_at,
+        ),
+        resource_type="user",
+        resource_id=user.id,
+    )
     return await _issue_auth_response(user, system_settings, database, response, request)
 
 
 @app.get("/api/auth/me", response_model=AuthResponse)
 async def auth_me(
-    auth: AuthContext = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> AuthResponse:
     await _cleanup_expired_sessions(database)
     system_settings = await _current_system_settings(database)
-    if auth.source in {"api-token", "development"}:
+    if auth.source == "development":
         return AuthResponse(
             token=_legacy_empty_token(),
             csrf_token=_legacy_empty_token(),
@@ -688,8 +957,9 @@ async def get_admin_settings(
 
 @app.patch("/api/admin/settings", response_model=SystemSettings)
 async def update_admin_settings(
+    request: Request,
     payload: SystemSettingsUpdate,
-    _: AuthContext = Depends(require_admin_mutation),
+    auth: AuthContext = Depends(require_admin_mutation),
     database: DatabaseRepository = Depends(get_database),
 ) -> SystemSettings:
     current = await _current_system_settings(database)
@@ -709,12 +979,20 @@ async def update_admin_settings(
     app.state.system_settings = saved
     app.state.system_settings_cached_at = monotonic()
     app.state.system_settings_cache_database_id = id(database)
+    await _record_audit_event(
+        database,
+        request,
+        "admin.settings_updated",
+        auth=auth,
+        resource_type="system_settings",
+        detail=payload.model_dump(exclude_none=True),
+    )
     return saved
 
 
 @app.get("/api/admin/users", response_model=list[AdminUser])
 async def list_admin_users(
-    _: AuthContext = Depends(require_admin),
+    _: AuthContext = Depends(require_admin_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AdminUser]:
     return await database.list_users()
@@ -722,6 +1000,7 @@ async def list_admin_users(
 
 @app.patch("/api/admin/users/{user_id}", response_model=AdminUser)
 async def update_admin_user(
+    request: Request,
     user_id: UUID,
     payload: UserRoleUpdateRequest,
     auth: AuthContext = Depends(require_admin_mutation),
@@ -733,7 +1012,42 @@ async def update_admin_user(
     user = await database.update_user_role(user_id_text, payload.role, payload.is_active)
     if user is None:
         raise HTTPException(status_code=404, detail="User was not found.")
+    await _record_audit_event(
+        database,
+        request,
+        "admin.user_updated",
+        auth=auth,
+        resource_type="user",
+        resource_id=user_id_text,
+        detail=payload.model_dump(exclude_none=True),
+    )
     return user
+
+
+@app.get("/api/admin/runs", response_model=list[WorkflowRunSummary])
+async def list_admin_runs(
+    limit: int = Query(default=100, ge=1, le=500),
+    _: AuthContext = Depends(require_admin_session),
+    database: DatabaseRepository = Depends(get_database),
+) -> list[WorkflowRunSummary]:
+    return await database.list_workflow_runs(limit, include_all=True)
+
+
+@app.get("/api/admin/memories", response_model=list[MemoryItem])
+async def list_admin_memories(
+    _: AuthContext = Depends(require_admin_session),
+    database: DatabaseRepository = Depends(get_database),
+) -> list[MemoryItem]:
+    return await database.list_memories(include_all=True)
+
+
+@app.get("/api/admin/audit-events", response_model=list[AuditEvent])
+async def list_admin_audit_events(
+    limit: int = Query(default=100, ge=1, le=500),
+    _: AuthContext = Depends(require_admin_session),
+    database: DatabaseRepository = Depends(get_database),
+) -> list[AuditEvent]:
+    return await database.list_audit_events(limit)
 
 
 @app.get("/metrics")
@@ -744,14 +1058,15 @@ async def get_metrics(_: None = Depends(require_metrics_token)) -> PlainTextResp
 
 
 @app.get("/api/agents", response_model=AgentGraphResponse)
-async def get_agents(_: AuthContext = Depends(require_api_token)) -> AgentGraphResponse:
+async def get_agents(_: AuthContext = Depends(require_user_session)) -> AgentGraphResponse:
     return registry.graph()
 
 
 @app.post("/api/runs", response_model=WorkflowRun)
 async def run_workflow(
+    request: Request,
     payload: RunRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -762,9 +1077,22 @@ async def run_workflow(
             detail="OPENROUTER_API_KEY is not configured.",
         )
 
+    await _ensure_workflow_quota(auth, database, kind="run")
+    _begin_user_workflow(auth)
     try:
-        memories = await _selected_memories(payload.memory_ids, database)
-        profiles = _profiles_or_defaults(payload.agent_profiles)
+        await _record_audit_event(
+            database,
+            request,
+            "workflow.run_started",
+            auth=auth,
+            resource_type="workflow_run",
+            detail={"output_format": payload.output_format},
+        )
+        memories = await _selected_memories(payload.memory_ids, database, auth)
+        profiles = _profiles_or_defaults(
+            payload.agent_profiles,
+            base_profiles=await _current_agent_profiles(database, auth),
+        )
         result = await orchestrator.run(
             payload.task,
             plan_override=payload.plan,
@@ -773,8 +1101,18 @@ async def run_workflow(
             output_format=payload.output_format,
             enable_review_phase=payload.enable_review_phase,
         )
-        await database.save_workflow_run(result)
+        result.owner_user_id = auth.user_id
+        await database.save_workflow_run(result, auth.user_id)
         _remember_run(result)
+        await _record_audit_event(
+            database,
+            request,
+            "workflow.run_completed",
+            auth=auth,
+            resource_type="workflow_run",
+            resource_id=result.run_id,
+            detail={"output_format": result.output_format},
+        )
         return result
     except HTTPError as exc:
         logger.exception("Workflow provider request failed.")
@@ -785,30 +1123,38 @@ async def run_workflow(
     except (RuntimeError, ValueError, KeyError) as exc:
         logger.exception("Workflow execution failed.")
         raise HTTPException(status_code=500, detail="Workflow failed.") from exc
+    finally:
+        _finish_user_workflow(auth)
 
 
 @app.get("/api/runs", response_model=list[WorkflowRunSummary])
 async def list_workflow_runs(
     limit: int = Query(default=20, ge=1, le=100),
-    _: None = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[WorkflowRunSummary]:
-    return await database.list_workflow_runs(limit)
+    return await database.list_workflow_runs(
+        limit,
+        owner_user_id=auth.user_id,
+    )
 
 
 @app.get("/api/runs/{run_id}", response_model=RunDetail)
 async def get_run_detail(
     run_id: UUID,
-    _: None = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> RunDetail:
     run_id_text = str(run_id)
-    detail = await database.get_workflow_run(run_id_text)
+    detail = await database.get_workflow_run(
+        run_id_text,
+        owner_user_id=auth.user_id,
+    )
     if detail is not None:
         return _merge_cached_evaluations(detail)
 
     cached = app.state.recent_runs.get(run_id_text)
-    if cached is not None:
+    if cached is not None and _cached_run_visible(cached, auth):
         return _merge_cached_evaluations(cached)
 
     raise HTTPException(status_code=404, detail="Run was not found.")
@@ -817,7 +1163,7 @@ async def get_run_detail(
 @app.post("/api/plans", response_model=list[DelegationItem])
 async def preview_plan(
     payload: PlanRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -828,41 +1174,52 @@ async def preview_plan(
             detail="OPENROUTER_API_KEY is not configured.",
         )
 
-    memories = await _selected_memories(payload.memory_ids, database)
+    await _ensure_workflow_quota(auth, database, kind="plan")
+    memories = await _selected_memories(payload.memory_ids, database, auth)
     return await orchestrator.create_plan(
         payload.task,
-        agent_profiles=_profiles_or_defaults(payload.agent_profiles),
+        agent_profiles=_profiles_or_defaults(
+            payload.agent_profiles,
+            base_profiles=await _current_agent_profiles(database, auth),
+        ),
         memory_items=memories,
     )
 
 
 @app.get("/api/agent-profiles", response_model=list[AgentProfile])
 async def list_agent_profiles(
-    _: None = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AgentProfile]:
-    profiles = await database.list_agent_profiles()
-    if profiles:
-        app.state.agent_profiles = profiles
-        return profiles
-    return app.state.agent_profiles
+    return await _current_agent_profiles(database, auth)
 
 
 @app.put("/api/agent-profiles", response_model=list[AgentProfile])
 async def save_agent_profiles(
+    request: Request,
     profiles: list[AgentProfile] = Body(max_length=4),
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[AgentProfile]:
-    normalized = _profiles_or_defaults(profiles)
-    app.state.agent_profiles = normalized
-    await database.save_agent_profiles(normalized)
+    normalized = _profiles_or_defaults(
+        profiles,
+        base_profiles=await _current_agent_profiles(database, auth),
+    )
+    await database.save_agent_profiles(normalized, auth.user_id)
+    await _record_audit_event(
+        database,
+        request,
+        "agent_profiles.saved",
+        auth=auth,
+        resource_type="agent_profiles",
+        detail={"count": len(normalized)},
+    )
     return normalized
 
 
 @app.get("/api/templates", response_model=list[WorkflowTemplate])
 async def list_templates(
-    _: AuthContext = Depends(require_api_token),
+    _: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[WorkflowTemplate]:
     templates = await database.list_templates()
@@ -874,32 +1231,45 @@ async def list_templates(
 
 @app.get("/api/memories", response_model=list[MemoryItem])
 async def list_memories(
-    _: None = Depends(require_api_token),
+    auth: AuthContext = Depends(require_user_session),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[MemoryItem]:
-    memories = await database.list_memories()
+    memories = await database.list_memories(
+        owner_user_id=auth.user_id,
+    )
     if database.is_configured:
         app.state.memories = memories
-    return app.state.memories if not database.is_configured else memories
+        return memories
+    return [memory for memory in app.state.memories if _memory_visible(memory, auth)]
 
 
 @app.post("/api/memories", response_model=MemoryItem)
 async def create_memory(
+    request: Request,
     payload: MemoryCreateRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> MemoryItem:
-    item = await database.create_memory(str(uuid4()), payload)
+    item = await database.create_memory(str(uuid4()), payload, auth.user_id)
     app.state.memories = [item, *app.state.memories][: settings.max_recent_runs]
+    await _record_audit_event(
+        database,
+        request,
+        "memory.created",
+        auth=auth,
+        resource_type="memory_item",
+        resource_id=item.id,
+    )
     return item
 
 
 @app.post("/api/runs/{run_id}/rerun/worker/{worker_id}", response_model=RunDetail)
 async def rerun_worker(
+    request: Request,
     run_id: UUID,
     worker_id: WorkerId,
     payload: RerunWorkerRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -911,39 +1281,58 @@ async def rerun_worker(
         )
 
     run_id_text = str(run_id)
-    detail = await _get_existing_run(run_id_text, database)
+    detail = await _get_existing_run(run_id_text, database, auth)
     plan_item = next((item for item in detail.plan if item.worker_id == worker_id), None)
     if plan_item is None:
         raise HTTPException(status_code=404, detail="Worker was not found in this run.")
 
+    await _ensure_workflow_quota(auth, database, kind="rerun")
+    _begin_user_workflow(auth)
     item = DelegationItem(
         worker_id=worker_id,
         objective=payload.objective or plan_item.objective,
         expected_output=payload.expected_output or plan_item.expected_output,
         enabled=True,
     )
-    result = await orchestrator.rerun_worker(
-        detail.task,
-        item,
-        agent_profiles=_profiles_or_defaults(payload.agent_profiles),
-        memory_items=await _selected_memories(payload.memory_ids, database),
-    )
-    detail.worker_results = _replace_worker_result(detail.worker_results, result)
-    await database.update_run_outputs(
-        run_id_text,
-        detail.worker_results,
-        detail.final_answer,
-        detail.output_format,
-    )
-    _remember_run(detail)
-    return detail
+    try:
+        result = await orchestrator.rerun_worker(
+            detail.task,
+            item,
+            agent_profiles=_profiles_or_defaults(
+                payload.agent_profiles,
+                base_profiles=await _current_agent_profiles(database, auth),
+            ),
+            memory_items=await _selected_memories(payload.memory_ids, database, auth),
+        )
+        detail.worker_results = _replace_worker_result(detail.worker_results, result)
+        await database.update_run_outputs(
+            run_id_text,
+            detail.worker_results,
+            detail.final_answer,
+            detail.output_format,
+            owner_user_id=auth.user_id,
+        )
+        _remember_run(detail)
+        await _record_audit_event(
+            database,
+            request,
+            "workflow.worker_rerun",
+            auth=auth,
+            resource_type="workflow_run",
+            resource_id=run_id_text,
+            detail={"worker_id": worker_id},
+        )
+        return detail
+    finally:
+        _finish_user_workflow(auth)
 
 
 @app.post("/api/runs/{run_id}/rerun/synthesis", response_model=RunDetail)
 async def rerun_synthesis(
+    request: Request,
     run_id: UUID,
     payload: RerunSynthesisRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -955,45 +1344,71 @@ async def rerun_synthesis(
         )
 
     run_id_text = str(run_id)
-    detail = await _get_existing_run(run_id_text, database)
-    detail.final_answer = await orchestrator.rerun_synthesis(
-        detail.task,
-        detail.worker_results,
-        output_format=payload.output_format,
-        memory_items=await _selected_memories(payload.memory_ids, database),
-    )
-    detail.output_format = payload.output_format
-    await database.update_run_outputs(
-        run_id_text,
-        detail.worker_results,
-        detail.final_answer,
-        detail.output_format,
-    )
-    _remember_run(detail)
-    return detail
+    detail = await _get_existing_run(run_id_text, database, auth)
+    await _ensure_workflow_quota(auth, database, kind="rerun")
+    _begin_user_workflow(auth)
+    try:
+        detail.final_answer = await orchestrator.rerun_synthesis(
+            detail.task,
+            detail.worker_results,
+            output_format=payload.output_format,
+            memory_items=await _selected_memories(payload.memory_ids, database, auth),
+        )
+        detail.output_format = payload.output_format
+        await database.update_run_outputs(
+            run_id_text,
+            detail.worker_results,
+            detail.final_answer,
+            detail.output_format,
+            owner_user_id=auth.user_id,
+        )
+        _remember_run(detail)
+        await _record_audit_event(
+            database,
+            request,
+            "workflow.synthesis_rerun",
+            auth=auth,
+            resource_type="workflow_run",
+            resource_id=run_id_text,
+            detail={"output_format": payload.output_format},
+        )
+        return detail
+    finally:
+        _finish_user_workflow(auth)
 
 
 @app.post("/api/evaluations/compare", response_model=list[EvaluationResult])
 async def compare_evaluations(
+    request: Request,
     payload: EvaluationCompareRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     database: DatabaseRepository = Depends(get_database),
 ) -> list[EvaluationResult]:
     results: list[EvaluationResult] = []
     for run_id in payload.run_ids:
         run_id_text = str(run_id)
-        detail = await _get_existing_run(run_id_text, database)
+        detail = await _get_existing_run(run_id_text, database, auth)
         evaluation = _evaluate_run(detail, payload.rubric)
         await database.save_evaluation(evaluation)
         _remember_evaluation(run_id_text, evaluation)
+        await _record_audit_event(
+            database,
+            request,
+            "workflow.evaluation_created",
+            auth=auth,
+            resource_type="workflow_run",
+            resource_id=run_id_text,
+            detail={"evaluation_id": evaluation.id},
+        )
         results.append(evaluation)
     return results
 
 
 @app.post("/api/runs/stream")
 async def stream_workflow(
+    request: Request,
     payload: RunRequest,
-    _: AuthContext = Depends(require_state_changing_auth),
+    auth: AuthContext = Depends(require_state_changing_auth),
     orchestrator: AgentOrchestrator = Depends(get_orchestrator),
     client: OpenRouterClient = Depends(get_client),
     database: DatabaseRepository = Depends(get_database),
@@ -1003,6 +1418,17 @@ async def stream_workflow(
             status_code=503,
             detail="OPENROUTER_API_KEY is not configured.",
         )
+
+    await _ensure_workflow_quota(auth, database, kind="stream")
+    _begin_user_workflow(auth)
+    await _record_audit_event(
+        database,
+        request,
+        "workflow.run_started",
+        auth=auth,
+        resource_type="workflow_run",
+        detail={"stream": True, "output_format": payload.output_format},
+    )
 
     async def event_stream() -> AsyncIterator[str]:
         queue: asyncio.Queue[WorkflowLog | ToolCall | WorkflowRun | StreamError | None] = (
@@ -1017,19 +1443,32 @@ async def stream_workflow(
 
         async def execute() -> None:
             try:
-                memories = await _selected_memories(payload.memory_ids, database)
+                memories = await _selected_memories(payload.memory_ids, database, auth)
                 result = await orchestrator.run(
                     payload.task,
                     log_callback=push_log,
                     tool_callback=push_tool,
                     plan_override=payload.plan,
-                    agent_profiles=_profiles_or_defaults(payload.agent_profiles),
+                    agent_profiles=_profiles_or_defaults(
+                        payload.agent_profiles,
+                        base_profiles=await _current_agent_profiles(database, auth),
+                    ),
                     memory_items=memories,
                     output_format=payload.output_format,
                     enable_review_phase=payload.enable_review_phase,
                 )
-                await database.save_workflow_run(result)
+                result.owner_user_id = auth.user_id
+                await database.save_workflow_run(result, auth.user_id)
                 _remember_run(result)
+                await _record_audit_event(
+                    database,
+                    request,
+                    "workflow.run_completed",
+                    auth=auth,
+                    resource_type="workflow_run",
+                    resource_id=result.run_id,
+                    detail={"stream": True, "output_format": result.output_format},
+                )
                 await queue.put(result)
             except Exception:
                 logger.exception("Workflow stream failed.")
@@ -1056,6 +1495,7 @@ async def stream_workflow(
                 run_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await run_task
+            _finish_user_workflow(auth)
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
@@ -1065,7 +1505,10 @@ def _json_line(event_type: str, payload: object) -> str:
 
 
 async def _load_agent_profiles(database: DatabaseRepository) -> list[AgentProfile]:
-    profiles = await database.list_agent_profiles()
+    if hasattr(database, "list_global_agent_profiles"):
+        profiles = await database.list_global_agent_profiles()
+    else:
+        profiles = await database.list_agent_profiles()
     return profiles or _default_agent_profiles()
 
 
@@ -1097,7 +1540,10 @@ def _default_templates() -> list[WorkflowTemplate]:
             id="market-research",
             name="Market research",
             description="Audience, positioning, risks, and launch recommendations.",
-            task_prompt="Analyze the market opportunity, target audience, positioning, risks, and next steps for: ",
+            task_prompt=(
+                "Analyze the market opportunity, target audience, positioning, "
+                "risks, and next steps for: "
+            ),
             output_format="markdown",
         ),
         WorkflowTemplate(
@@ -1131,11 +1577,27 @@ def _default_templates() -> list[WorkflowTemplate]:
     ]
 
 
-def _profiles_or_defaults(profiles: list[AgentProfile] | None) -> list[AgentProfile]:
+async def _current_agent_profiles(
+    database: DatabaseRepository,
+    auth: AuthContext,
+) -> list[AgentProfile]:
+    base_profiles = app.state.agent_profiles
+    if not database.is_configured or auth.source == "development":
+        return base_profiles
+    profiles = await database.list_agent_profiles(auth.user_id)
+    return _profiles_or_defaults(profiles, base_profiles=base_profiles)
+
+
+def _profiles_or_defaults(
+    profiles: list[AgentProfile] | None,
+    *,
+    base_profiles: list[AgentProfile] | None = None,
+) -> list[AgentProfile]:
+    base = base_profiles or app.state.agent_profiles
     if not profiles:
-        return app.state.agent_profiles
+        return base
     default_by_id = {profile.id: profile for profile in _default_agent_profiles()}
-    merged = {profile.id: profile for profile in app.state.agent_profiles}
+    merged = {profile.id: profile for profile in base}
     for profile in profiles:
         if profile.id in default_by_id:
             merged[profile.id] = profile
@@ -1145,18 +1607,27 @@ def _profiles_or_defaults(profiles: list[AgentProfile] | None) -> list[AgentProf
 async def _selected_memories(
     memory_ids: list[UUID],
     database: DatabaseRepository,
+    auth: AuthContext,
 ) -> list[MemoryItem]:
     if not memory_ids:
         return []
 
-    memories = await database.list_memories()
+    memories = await database.list_memories(owner_user_id=auth.user_id)
     if database.is_configured:
         app.state.memories = memories
     else:
-        memories = app.state.memories
+        memories = [
+            memory for memory in app.state.memories if _memory_visible(memory, auth)
+        ]
 
     selected = {str(memory_id) for memory_id in memory_ids}
     return [memory for memory in memories if memory.enabled and memory.id in selected]
+
+
+def _memory_visible(memory: MemoryItem, auth: AuthContext) -> bool:
+    if auth.source == "development":
+        return True
+    return memory.owner_user_id == auth.user_id
 
 
 def _remember_run(run: WorkflowRun | RunDetail) -> None:
@@ -1180,13 +1651,20 @@ def _remember_evaluation(run_id: str, evaluation: EvaluationResult) -> None:
 async def _get_existing_run(
     run_id: str,
     database: DatabaseRepository,
+    auth: AuthContext,
 ) -> RunDetail:
-    detail = await database.get_workflow_run(run_id)
+    detail = await database.get_workflow_run(run_id, owner_user_id=auth.user_id)
     if detail is None:
         detail = app.state.recent_runs.get(run_id)
-    if detail is None:
+    if detail is None or not _cached_run_visible(detail, auth):
         raise HTTPException(status_code=404, detail="Run was not found.")
     return _merge_cached_evaluations(detail)
+
+
+def _cached_run_visible(run: WorkflowRun | RunDetail, auth: AuthContext) -> bool:
+    if auth.source == "development":
+        return True
+    return run.owner_user_id == auth.user_id
 
 
 def _merge_cached_evaluations(detail: RunDetail) -> RunDetail:
@@ -1240,6 +1718,9 @@ def _evaluate_run(run: RunDetail, rubric: str) -> EvaluationResult:
         actionability=actionability,
         hallucination_risk=hallucination_risk,
         overall=overall,
-        notes="Heuristic score based on sections, worker coverage, action words, and risk language.",
+        notes=(
+            "Heuristic score based on sections, worker coverage, action words, "
+            "and risk language."
+        ),
         created_at=datetime.now(UTC).isoformat(),
     )

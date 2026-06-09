@@ -23,6 +23,11 @@ AUTH_SESSION_CLEANUP_INTERVAL_SECONDS=900
 AUTH_SESSION_TOUCH_INTERVAL_SECONDS=300
 AUTH_RATE_LIMIT_MAX_ATTEMPTS=5
 AUTH_RATE_LIMIT_WINDOW_SECONDS=900
+AUTH_RATE_LIMIT_BACKEND=postgres
+WORKFLOW_RATE_LIMIT_PER_HOUR=20
+WORKFLOW_RATE_LIMIT_PER_DAY=100
+WORKFLOW_MAX_CONCURRENT_PER_USER=1
+RATE_LIMIT_CLEANUP_INTERVAL_SECONDS=3600
 SESSION_COOKIE_NAME=orbis_session
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=lax
@@ -72,9 +77,10 @@ UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
 
 ## Important Notes
 
-- `ORBIS_API_TOKEN` is a backend bootstrap/server token. Do not expose it through the public frontend.
+- `ORBIS_API_TOKEN` is a backend service/diagnostic token for explicit service endpoints such as `/api/service/health`; it is not accepted as browser user or admin auth.
 - Keep `CORS_ALLOW_CREDENTIALS=true` with strict `FRONTEND_ORIGINS`; Orbis browser auth uses an `HttpOnly` cookie session plus CSRF token.
 - Keep `SESSION_COOKIE_SECURE=true` in production. Use `SESSION_COOKIE_SAMESITE=lax` for same-site subdomains, or `none` only when frontend/backend are on different sites and HTTPS is active.
 - Keep backend **Port** set to `8000` unless you intentionally change `PORT` in the backend environment.
 - `APP_ENV=production` rejects local frontend origins, disabled DB TLS, and automatic table creation.
 - If Supabase is missing or unreachable, the backend refuses to start because auth, roles, settings, and run history require Postgres.
+- Public `/health` returns only `{ "status": "ok" }`; use `/api/admin/health` from an admin session for detailed diagnostics.

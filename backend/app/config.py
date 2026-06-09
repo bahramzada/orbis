@@ -122,6 +122,26 @@ class Settings(BaseSettings):
         default=900,
         alias="AUTH_RATE_LIMIT_WINDOW_SECONDS",
     )
+    auth_rate_limit_backend: str = Field(
+        default="postgres",
+        alias="AUTH_RATE_LIMIT_BACKEND",
+    )
+    workflow_rate_limit_per_hour: int = Field(
+        default=20,
+        alias="WORKFLOW_RATE_LIMIT_PER_HOUR",
+    )
+    workflow_rate_limit_per_day: int = Field(
+        default=100,
+        alias="WORKFLOW_RATE_LIMIT_PER_DAY",
+    )
+    workflow_max_concurrent_per_user: int = Field(
+        default=1,
+        alias="WORKFLOW_MAX_CONCURRENT_PER_USER",
+    )
+    rate_limit_cleanup_interval_seconds: int = Field(
+        default=3600,
+        alias="RATE_LIMIT_CLEANUP_INTERVAL_SECONDS",
+    )
     session_cookie_name: str = Field(
         default="orbis_session",
         alias="SESSION_COOKIE_NAME",

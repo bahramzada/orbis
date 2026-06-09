@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.config import Settings
-from app.db import DatabaseRepository, SessionAuthRecord
+from app.db import DatabaseRepository, SessionAuthRecord, _sanitize_audit_detail
 from app.main import (
     _auth_failures,
     _cleanup_expired_sessions,
@@ -20,7 +20,21 @@ from app.main import (
     require_api_token,
     settings,
 )
-from app.schemas import AdminUser, AuthUser, MemoryCreateRequest, MemoryItem, SystemSettings, UserRole
+from app.schemas import (
+    AdminUser,
+    AgentProfile,
+    AuditEvent,
+    AuthUser,
+    MemoryCreateRequest,
+    MemoryItem,
+    RunDetail,
+    SystemSettings,
+    UserRole,
+    WorkerResult,
+    WorkflowTemplate,
+    WorkflowRun,
+    WorkflowRunSummary,
+)
 from app.security import hash_pbkdf2_password
 
 
@@ -33,7 +47,13 @@ class FakeAuthDatabase:
         self.users: dict[str, dict[str, object]] = {}
         self.sessions: dict[str, dict[str, str]] = {}
         self.memories: list[MemoryItem] = []
+        self.agent_profiles: dict[str, list[AgentProfile]] = {}
+        self.global_agent_profiles: list[AgentProfile] = []
+        self.runs: dict[str, RunDetail] = {}
+        self.audit_events: list[AuditEvent] = []
+        self.rate_limit_counts: dict[str, int] = {}
         self.expired_session_delete_count = 0
+        self.expired_rate_limit_delete_count = 0
         self.get_user_by_id_count = 0
         self.last_touch_interval: int | None = None
         self.session_auth_read_count = 0
@@ -47,6 +67,14 @@ class FakeAuthDatabase:
     @property
     def is_persistence_configured(self) -> bool:
         return True
+
+    @property
+    def status(self) -> str:
+        return "ready"
+
+    @property
+    def error_code(self) -> str:
+        return ""
 
     async def get_system_settings(self) -> SystemSettings:
         self.system_settings_read_count += 1
@@ -193,9 +221,15 @@ class FakeAuthDatabase:
             updated_at=str(row["updated_at"]),
         )
 
-    async def create_memory(self, item_id: str, payload: MemoryCreateRequest) -> MemoryItem:
+    async def create_memory(
+        self,
+        item_id: str,
+        payload: MemoryCreateRequest,
+        owner_user_id: str,
+    ) -> MemoryItem:
         item = MemoryItem(
             id=item_id,
+            owner_user_id=owner_user_id,
             title=payload.title,
             category=payload.category,
             content=payload.content,
@@ -204,6 +238,164 @@ class FakeAuthDatabase:
         )
         self.memories.append(item)
         return item
+
+    async def list_memories(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> list[MemoryItem]:
+        if include_all:
+            return list(self.memories)
+        return [
+            memory
+            for memory in self.memories
+            if owner_user_id is not None and memory.owner_user_id == owner_user_id
+        ]
+
+    async def list_templates(self) -> list[WorkflowTemplate]:
+        return []
+
+    async def list_global_agent_profiles(self) -> list[AgentProfile]:
+        return list(self.global_agent_profiles)
+
+    async def list_agent_profiles(
+        self,
+        owner_user_id: str | None = None,
+    ) -> list[AgentProfile]:
+        if owner_user_id is None:
+            return await self.list_global_agent_profiles()
+        return list(self.agent_profiles.get(owner_user_id, []))
+
+    async def save_agent_profiles(
+        self,
+        profiles: list[AgentProfile],
+        owner_user_id: str | None = None,
+    ) -> None:
+        if owner_user_id is None:
+            self.global_agent_profiles = list(profiles)
+            return
+        self.agent_profiles[owner_user_id] = list(profiles)
+
+    async def save_workflow_run(
+        self,
+        run: WorkflowRun,
+        owner_user_id: str,
+    ) -> None:
+        run.owner_user_id = owner_user_id
+        self.runs[run.run_id] = RunDetail.model_validate(run.model_dump(mode="json"))
+
+    async def list_workflow_runs(
+        self,
+        limit: int = 20,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> list[WorkflowRunSummary]:
+        runs = list(self.runs.values())
+        if not include_all:
+            runs = [
+                run
+                for run in runs
+                if owner_user_id is not None and run.owner_user_id == owner_user_id
+            ]
+        return [
+            WorkflowRunSummary(
+                run_id=run.run_id,
+                task=run.task,
+                model=run.model,
+                status=run.status,
+                created_at="2026-05-31T00:00:00+00:00",
+                completed_at="2026-05-31T00:00:01+00:00",
+                owner_user_id=run.owner_user_id,
+            )
+            for run in runs[:limit]
+        ]
+
+    async def get_workflow_run(
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> RunDetail | None:
+        run = self.runs.get(run_id)
+        if run is None:
+            return None
+        if include_all:
+            return run
+        if owner_user_id is not None and run.owner_user_id == owner_user_id:
+            return run
+        return None
+
+    async def update_run_outputs(
+        self,
+        run_id: str,
+        worker_results: list[WorkerResult],
+        final_answer: str,
+        output_format: str,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> None:
+        run = await self.get_workflow_run(
+            run_id,
+            owner_user_id=owner_user_id,
+            include_all=include_all,
+        )
+        if run is None:
+            return
+        run.worker_results = worker_results
+        run.final_answer = final_answer
+        run.output_format = output_format
+
+    async def save_evaluation(self, _: object) -> None:
+        return None
+
+    async def record_audit_event(
+        self,
+        *,
+        event_id: str,
+        action: str,
+        actor_user_id: str | None = None,
+        actor_email: str = "",
+        actor_role: str = "",
+        resource_type: str = "",
+        resource_id: str = "",
+        ip_address: str = "",
+        user_agent: str = "",
+        detail: dict[str, object] | None = None,
+    ) -> None:
+        self.audit_events.insert(
+            0,
+            AuditEvent(
+                id=event_id,
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                actor_role=actor_role,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                detail=detail or {},
+                created_at="2026-05-31T00:00:00+00:00",
+            ),
+        )
+
+    async def list_audit_events(self, limit: int = 100) -> list[AuditEvent]:
+        return self.audit_events[:limit]
+
+    async def increment_rate_limit(self, key: str, *, window_seconds: int) -> int:
+        _ = window_seconds
+        self.rate_limit_counts[key] = self.rate_limit_counts.get(key, 0) + 1
+        return self.rate_limit_counts[key]
+
+    async def reset_rate_limit(self, key: str) -> None:
+        self.rate_limit_counts.pop(key, None)
+
+    async def delete_expired_rate_limits(self) -> None:
+        self.expired_rate_limit_delete_count += 1
 
 
 @pytest.fixture(autouse=True)
@@ -224,8 +416,56 @@ def secure_test_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "auth_session_touch_interval_seconds", 300)
     monkeypatch.setattr(settings, "auth_rate_limit_max_attempts", 5)
     monkeypatch.setattr(settings, "auth_rate_limit_window_seconds", 900)
+    monkeypatch.setattr(settings, "auth_rate_limit_backend", "postgres")
+    monkeypatch.setattr(settings, "workflow_rate_limit_per_hour", 20)
+    monkeypatch.setattr(settings, "workflow_rate_limit_per_day", 100)
+    monkeypatch.setattr(settings, "workflow_max_concurrent_per_user", 1)
+    monkeypatch.setattr(settings, "rate_limit_cleanup_interval_seconds", 3600)
     monkeypatch.setattr(settings, "system_settings_cache_ttl_seconds", 30)
     _auth_failures.clear()
+
+
+def _register_session(
+    client: TestClient,
+    fake_database: FakeAuthDatabase,
+    *,
+    email: str = "person@example.com",
+    role: UserRole = "guest",
+) -> tuple[str, str]:
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "email": email,
+            "password": "strong-password",  # pragma: allowlist secret
+            "display_name": email.split("@", 1)[0],
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    user_id = str(payload["user"]["id"])
+    fake_database.users[user_id]["role"] = role
+    return user_id, str(payload["csrf_token"])
+
+
+def _sample_run(owner_user_id: str | None) -> RunDetail:
+    run_id = str(uuid4())
+    return RunDetail(
+        run_id=run_id,
+        owner_user_id=owner_user_id,
+        task="Create a launch plan.",
+        model="test-model",
+        status="completed",
+        logs=[],
+        plan=[],
+        worker_results=[],
+        final_answer="Done.",
+        tool_calls=[],
+        output_format="markdown",
+        duration_ms=10,
+        estimated_tokens=20,
+        estimated_cost_usd=0.0,
+        evaluations=[],
+    )
 
 
 def test_bearer_token_auth_uses_constant_time_compare() -> None:
@@ -234,29 +474,64 @@ def test_bearer_token_auth_uses_constant_time_compare() -> None:
     assert _is_authorized("Basic test-token", "test-token") is False
 
 
+def test_audit_detail_redacts_sensitive_values() -> None:
+    sanitized = _sanitize_audit_detail(
+        {
+            "password": "strong-password",
+            "Authorization": "Bearer test-token",
+            "database_url": "postgresql://user:secret@example.com/db",
+            "nested": {"csrf_token": "csrf", "normal": "kept"},
+        }
+    )
+
+    assert sanitized == {
+        "password": "[redacted]",
+        "Authorization": "[redacted]",
+        "database_url": "[redacted]",
+        "nested": {"csrf_token": "[redacted]", "normal": "kept"},
+    }
+
+
 def test_mutating_endpoints_require_authorization() -> None:
-    with TestClient(app) as client:
-        unauthorized = client.post(
-            "/api/memories",
-            json={
-                "title": "Brand voice",
-                "category": "brand",
-                "content": "Use concise language.",
-                "enabled": True,
-            },
-        )
-        authorized = client.post(
-            "/api/memories",
-            headers=AUTH_HEADERS,
-            json={
-                "title": "Brand voice",
-                "category": "brand",
-                "content": "Use concise language.",
-                "enabled": True,
-            },
-        )
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            unauthorized = client.post(
+                "/api/memories",
+                json={
+                    "title": "Brand voice",
+                    "category": "brand",
+                    "content": "Use concise language.",
+                    "enabled": True,
+                },
+            )
+            bearer = client.post(
+                "/api/memories",
+                headers=AUTH_HEADERS,
+                json={
+                    "title": "Brand voice",
+                    "category": "brand",
+                    "content": "Use concise language.",
+                    "enabled": True,
+                },
+            )
+            _, csrf_token = _register_session(client, fake_database)
+            authorized = client.post(
+                "/api/memories",
+                headers={"X-CSRF-Token": csrf_token},
+                json={
+                    "title": "Brand voice",
+                    "category": "brand",
+                    "content": "Use concise language.",
+                    "enabled": True,
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
 
     assert unauthorized.status_code == 401
+    assert bearer.status_code == 401
     assert authorized.status_code == 200
 
 
@@ -270,14 +545,24 @@ def test_metrics_requires_authorization_when_token_is_configured() -> None:
 
 
 def test_system_read_endpoints_require_authorization() -> None:
-    with TestClient(app) as client:
-        agents_unauthorized = client.get("/api/agents")
-        templates_unauthorized = client.get("/api/templates")
-        agents_authorized = client.get("/api/agents", headers=AUTH_HEADERS)
-        templates_authorized = client.get("/api/templates", headers=AUTH_HEADERS)
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            agents_unauthorized = client.get("/api/agents")
+            templates_unauthorized = client.get("/api/templates")
+            agents_bearer = client.get("/api/agents", headers=AUTH_HEADERS)
+            templates_bearer = client.get("/api/templates", headers=AUTH_HEADERS)
+            _register_session(client, fake_database)
+            agents_authorized = client.get("/api/agents")
+            templates_authorized = client.get("/api/templates")
+    finally:
+        app.dependency_overrides.clear()
 
     assert agents_unauthorized.status_code == 401
     assert templates_unauthorized.status_code == 401
+    assert agents_bearer.status_code == 401
+    assert templates_bearer.status_code == 401
     assert agents_authorized.status_code == 200
     assert templates_authorized.status_code == 200
 
@@ -480,17 +765,21 @@ def test_login_rate_limit_blocks_repeated_failures(
     app.dependency_overrides[get_database] = lambda: fake_database
     try:
         with TestClient(app) as client:
+            payload = {
+                "email": "missing@example.com",
+                "password": "bad",  # pragma: allowlist secret
+            }
             first = client.post(
                 "/api/auth/login",
-                json={"email": "missing@example.com", "password": "bad"},  # pragma: allowlist secret
+                json=payload,
             )
             second = client.post(
                 "/api/auth/login",
-                json={"email": "missing@example.com", "password": "bad"},  # pragma: allowlist secret
+                json=payload,
             )
             locked = client.post(
                 "/api/auth/login",
-                json={"email": "missing@example.com", "password": "bad"},  # pragma: allowlist secret
+                json=payload,
             )
     finally:
         app.dependency_overrides.clear()
@@ -543,14 +832,20 @@ def test_admin_can_update_system_settings_and_user_role() -> None:
     app.dependency_overrides[get_database] = lambda: fake_database
     try:
         with TestClient(app) as client:
+            _, csrf_token = _register_session(
+                client,
+                fake_database,
+                email="admin@example.com",
+                role="admin",
+            )
             settings_response = client.patch(
                 "/api/admin/settings",
-                headers=AUTH_HEADERS,
+                headers={"X-CSRF-Token": csrf_token},
                 json={"system_enabled": False, "register_enabled": False},
             )
             role_response = client.patch(
                 f"/api/admin/users/{created.id}",
-                headers=AUTH_HEADERS,
+                headers={"X-CSRF-Token": csrf_token},
                 json={"role": "vip", "is_active": False},
             )
     finally:
@@ -568,23 +863,18 @@ def test_admin_can_update_system_settings_and_user_role() -> None:
 
 def test_last_active_admin_cannot_be_downgraded() -> None:
     fake_database = FakeAuthDatabase()
-    admin_id = str(uuid4())
-    fake_database.users[admin_id] = {
-        "id": admin_id,
-        "email": "admin@example.com",
-        "display_name": "Admin",
-        "password_hash": "stored-password-hash",  # pragma: allowlist secret
-        "role": "admin",
-        "is_active": True,
-        "created_at": "2026-05-31T00:00:00+00:00",
-        "updated_at": "2026-05-31T00:00:00+00:00",
-    }
     app.dependency_overrides[get_database] = lambda: fake_database
     try:
         with TestClient(app) as client:
+            admin_id, csrf_token = _register_session(
+                client,
+                fake_database,
+                email="admin@example.com",
+                role="admin",
+            )
             response = client.patch(
                 f"/api/admin/users/{admin_id}",
-                headers=AUTH_HEADERS,
+                headers={"X-CSRF-Token": csrf_token},
                 json={"role": "vip", "is_active": True},
             )
     finally:
@@ -594,33 +884,146 @@ def test_last_active_admin_cannot_be_downgraded() -> None:
     assert response.json()["detail"] == "At least one active admin must remain."
 
 
-def test_health_reports_database_status() -> None:
+def test_public_health_is_minimal() -> None:
     with TestClient(app) as client:
         response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["database_status"] == "disabled"
+    assert response.json() == {"status": "ok"}
+
+
+def test_admin_health_reports_database_status() -> None:
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            _register_session(
+                client,
+                fake_database,
+                email="admin@example.com",
+                role="admin",
+            )
+            response = client.get("/api/admin/health")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["database_status"] == "ready"
     assert response.json()["database_error_code"] == ""
+
+
+def test_bearer_token_is_service_scoped_not_admin_or_user_auth() -> None:
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            user_endpoint = client.get("/api/agents", headers=AUTH_HEADERS)
+            admin_endpoint = client.get("/api/admin/users", headers=AUTH_HEADERS)
+            service_endpoint = client.get("/api/service/health", headers=AUTH_HEADERS)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert user_endpoint.status_code == 401
+    assert admin_endpoint.status_code == 401
+    assert service_endpoint.status_code == 200
+    assert fake_database.audit_events[0].action == "service_token.used"
+
+
+def test_user_data_is_owner_scoped_and_admin_endpoints_can_see_legacy_rows() -> None:
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            user_a, _ = _register_session(
+                client,
+                fake_database,
+                email="a@example.com",
+            )
+            run_a = _sample_run(user_a)
+            legacy_run = _sample_run(None)
+            fake_database.runs[run_a.run_id] = run_a
+            fake_database.runs[legacy_run.run_id] = legacy_run
+            fake_database.memories.append(
+                MemoryItem(
+                    id=str(uuid4()),
+                    owner_user_id=user_a,
+                    title="A memory",
+                    category="general",
+                    content="Private to user A.",
+                    enabled=True,
+                    created_at="2026-05-31T00:00:00+00:00",
+                )
+            )
+            fake_database.memories.append(
+                MemoryItem(
+                    id=str(uuid4()),
+                    owner_user_id=None,
+                    title="Legacy",
+                    category="general",
+                    content="Ownerless legacy memory.",
+                    enabled=True,
+                    created_at="2026-05-31T00:00:00+00:00",
+                )
+            )
+
+            own_run = client.get(f"/api/runs/{run_a.run_id}")
+            own_memories = client.get("/api/memories")
+
+            user_b, _ = _register_session(
+                client,
+                fake_database,
+                email="b@example.com",
+            )
+            other_run = client.get(f"/api/runs/{run_a.run_id}")
+            hidden_legacy_run = client.get(f"/api/runs/{legacy_run.run_id}")
+            user_b_memories = client.get("/api/memories")
+
+            fake_database.users[user_b]["role"] = "admin"
+            admin_runs = client.get("/api/admin/runs")
+            admin_memories = client.get("/api/admin/memories")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert own_run.status_code == 200
+    assert own_memories.status_code == 200
+    assert len(own_memories.json()) == 1
+    assert other_run.status_code == 404
+    assert hidden_legacy_run.status_code == 404
+    assert user_b_memories.status_code == 200
+    assert user_b_memories.json() == []
+    assert admin_runs.status_code == 200
+    assert {item["run_id"] for item in admin_runs.json()} == {
+        run_a.run_id,
+        legacy_run.run_id,
+    }
+    assert admin_memories.status_code == 200
+    assert len(admin_memories.json()) == 2
 
 
 def test_run_detail_rejects_invalid_uuid_path() -> None:
     with TestClient(app) as client:
-        response = client.get("/api/runs/not-a-uuid", headers=AUTH_HEADERS)
+        response = client.get("/api/runs/not-a-uuid")
 
     assert response.status_code == 422
 
 
 def test_plan_request_rejects_oversized_memory_id_list() -> None:
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/plans",
-            headers=AUTH_HEADERS,
-            json={
-                "task": "Create a short support workflow.",
-                "memory_ids": [str(uuid4()) for _ in range(26)],
-                "agent_profiles": [],
-            },
-        )
+    fake_database = FakeAuthDatabase()
+    app.dependency_overrides[get_database] = lambda: fake_database
+    try:
+        with TestClient(app) as client:
+            _, csrf_token = _register_session(client, fake_database)
+            response = client.post(
+                "/api/plans",
+                headers={"X-CSRF-Token": csrf_token},
+                json={
+                    "task": "Create a short support workflow.",
+                    "memory_ids": [str(uuid4()) for _ in range(26)],
+                    "agent_profiles": [],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 422
 

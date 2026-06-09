@@ -184,6 +184,9 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
     fourth_migration = (
         "backend/migrations/versions/20260531_0004_secure_sessions.py"
     )
+    fifth_migration = (
+        "backend/migrations/versions/20260609_0005_stride_remediation.py"
+    )
 
     with open(first_migration, encoding="utf-8") as migration_file:
         first_source = migration_file.read()
@@ -193,6 +196,8 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
         third_source = migration_file.read()
     with open(fourth_migration, encoding="utf-8") as migration_file:
         fourth_source = migration_file.read()
+    with open(fifth_migration, encoding="utf-8") as migration_file:
+        fifth_source = migration_file.read()
 
     assert "_table_exists" in first_source
     assert "CREATE INDEX IF NOT EXISTS" in first_source
@@ -203,6 +208,11 @@ def test_migrations_are_safe_for_partial_bootstrap() -> None:
     assert "CREATE INDEX IF NOT EXISTS" in third_source
     assert "_column_exists" in fourth_source
     assert "_add_column_if_missing" in fourth_source
+    assert "_foreign_key_exists" in fifth_source
+    assert "owner_user_id" in fifth_source
+    assert "security_audit_events" in fifth_source
+    assert "rate_limit_counters" in fifth_source
+    assert "CREATE INDEX IF NOT EXISTS" in fifth_source
 
 
 def test_secure_session_columns_are_declared() -> None:
@@ -212,6 +222,19 @@ def test_secure_session_columns_are_declared() -> None:
     assert "last_seen_at" in auth_sessions.c
     assert "user_agent" in auth_sessions.c
     assert "ip_address" in auth_sessions.c
+
+
+def test_stride_remediation_tables_and_columns_are_declared() -> None:
+    workflow_runs = metadata.tables["workflow_runs"]
+    memory_items = metadata.tables["memory_items"]
+    run_evaluations = metadata.tables["run_evaluations"]
+
+    assert "owner_user_id" in workflow_runs.c
+    assert "owner_user_id" in memory_items.c
+    assert run_evaluations.c.run_id.foreign_keys
+    assert "user_agent_profiles" in metadata.tables
+    assert "security_audit_events" in metadata.tables
+    assert "rate_limit_counters" in metadata.tables
 
 
 def test_docker_entrypoint_runs_migrations_before_api_start() -> None:

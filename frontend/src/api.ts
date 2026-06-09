@@ -1,7 +1,9 @@
 import type {
   AgentGraph,
   AgentProfile,
+  AdminHealthResponse,
   AdminUser,
+  AuditEvent,
   AuthResponse,
   DelegationItem,
   EvaluationResult,
@@ -12,6 +14,7 @@ import type {
   ToolCall,
   WorkflowLog,
   WorkflowRun,
+  WorkflowRunSummary,
   WorkflowTemplate
 } from "./types";
 
@@ -147,6 +150,50 @@ export async function updateSystemSettings(payload: {
     throw new Error("System settings could not be saved.");
   }
   return response.json() as Promise<AuthResponse["system"]>;
+}
+
+export async function fetchAdminHealth(): Promise<AdminHealthResponse> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/health`, {
+    headers: authHeaders(),
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error("Admin health could not be loaded.");
+  }
+  return response.json() as Promise<AdminHealthResponse>;
+}
+
+export async function fetchAdminRuns(): Promise<WorkflowRunSummary[]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/runs`, {
+    headers: authHeaders(),
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error("Admin runs could not be loaded.");
+  }
+  return response.json() as Promise<WorkflowRunSummary[]>;
+}
+
+export async function fetchAdminMemories(): Promise<MemoryItem[]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/memories`, {
+    headers: authHeaders(),
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error("Admin memories could not be loaded.");
+  }
+  return response.json() as Promise<MemoryItem[]>;
+}
+
+export async function fetchAdminAuditEvents(): Promise<AuditEvent[]> {
+  const response = await fetch(`${apiBaseUrl}/api/admin/audit-events`, {
+    headers: authHeaders(),
+    credentials: "include"
+  });
+  if (!response.ok) {
+    throw new Error("Audit events could not be loaded.");
+  }
+  return response.json() as Promise<AuditEvent[]>;
 }
 
 export const fallbackGraph: AgentGraph = {

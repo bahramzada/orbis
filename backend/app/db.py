@@ -25,7 +25,11 @@ from sqlalchemy import (
     text,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
+from sqlalchemy.dialects.postgresql import (
+    JSONB,
+    UUID as PostgresUUID,
+    insert as pg_insert,
+)
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -33,6 +37,7 @@ from app.config import Settings
 from app.metrics import timer
 from app.security import redact_sensitive_text
 from app.schemas import (
+    AuditEvent,
     AdminUser,
     AgentProfile,
     AuthUser,
@@ -58,10 +63,13 @@ REQUIRED_TABLE_NAMES = frozenset(
         "workflow_runs",
         "workflow_logs",
         "agent_profiles",
+        "user_agent_profiles",
         "workflow_templates",
         "memory_items",
         "tool_calls",
         "run_evaluations",
+        "security_audit_events",
+        "rate_limit_counters",
         "users",
         "auth_sessions",
         "system_settings",
@@ -71,7 +79,9 @@ REQUIRED_TABLE_NAMES = frozenset(
 REQUIRED_TABLE_COLUMNS = {
     "auth_sessions": frozenset(
         {"csrf_hash", "last_seen_at", "user_agent", "ip_address"}
-    )
+    ),
+    "workflow_runs": frozenset({"owner_user_id"}),
+    "memory_items": frozenset({"owner_user_id"}),
 }
 
 
@@ -91,6 +101,7 @@ workflow_runs = Table(
     "workflow_runs",
     metadata,
     Column("run_id", PostgresUUID(as_uuid=True), primary_key=True),
+    Column("owner_user_id", String(64), ForeignKey("users.id"), nullable=True),
     Column("task", Text, nullable=False),
     Column("model", Text, nullable=False),
     Column("status", String(32), nullable=False),
@@ -149,6 +160,27 @@ agent_profiles = Table(
     Column("enabled", Boolean, nullable=False, default=True),
 )
 
+user_agent_profiles = Table(
+    "user_agent_profiles",
+    metadata,
+    Column(
+        "owner_user_id",
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("id", String(64), primary_key=True),
+    Column("name", String(120), nullable=False),
+    Column("role", String(120), nullable=False),
+    Column("goal", Text, nullable=False),
+    Column("system_prompt", Text, nullable=False, default=""),
+    Column("model", Text, nullable=False, default=""),
+    Column("temperature", Float, nullable=False, default=0.3),
+    Column("max_tokens", Integer, nullable=False, default=900),
+    Column("enabled", Boolean, nullable=False, default=True),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 workflow_templates = Table(
     "workflow_templates",
     metadata,
@@ -163,6 +195,7 @@ memory_items = Table(
     "memory_items",
     metadata,
     Column("id", String(64), primary_key=True),
+    Column("owner_user_id", String(64), ForeignKey("users.id"), nullable=True),
     Column("title", String(120), nullable=False),
     Column("category", String(64), nullable=False),
     Column("content", Text, nullable=False),
@@ -186,7 +219,12 @@ run_evaluations = Table(
     "run_evaluations",
     metadata,
     Column("id", String(64), primary_key=True),
-    Column("run_id", PostgresUUID(as_uuid=True), nullable=False),
+    Column(
+        "run_id",
+        PostgresUUID(as_uuid=True),
+        ForeignKey("workflow_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("rubric", Text, nullable=False),
     Column("completeness", Integer, nullable=False),
     Column("actionability", Integer, nullable=False),
@@ -235,11 +273,59 @@ system_settings = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
-Index("ix_memory_items_enabled_created", memory_items.c.enabled, memory_items.c.created_at)
+security_audit_events = Table(
+    "security_audit_events",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("actor_user_id", String(64), nullable=True),
+    Column("actor_email", String(320), nullable=False, default=""),
+    Column("actor_role", String(32), nullable=False, default=""),
+    Column("action", String(120), nullable=False),
+    Column("resource_type", String(80), nullable=False, default=""),
+    Column("resource_id", String(120), nullable=False, default=""),
+    Column("ip_address", String(64), nullable=False, default=""),
+    Column("user_agent", String(256), nullable=False, default=""),
+    Column("detail", JSONB, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+rate_limit_counters = Table(
+    "rate_limit_counters",
+    metadata,
+    Column("key", String(240), primary_key=True),
+    Column("window_start", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("count", Integer, nullable=False, default=0),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
+Index(
+    "ix_workflow_runs_owner_completed",
+    workflow_runs.c.owner_user_id,
+    workflow_runs.c.completed_at.desc(),
+)
+Index(
+    "ix_memory_items_enabled_created",
+    memory_items.c.enabled,
+    memory_items.c.created_at,
+)
+Index(
+    "ix_memory_items_owner_enabled_created",
+    memory_items.c.owner_user_id,
+    memory_items.c.enabled,
+    memory_items.c.created_at.desc(),
+)
 Index("ix_tool_calls_run_id_created", tool_calls.c.run_id, tool_calls.c.created_at)
 Index("ix_run_evaluations_run_id_created", run_evaluations.c.run_id, run_evaluations.c.created_at)
 Index("ix_users_role_created", users.c.role, users.c.created_at.desc())
 Index("ix_auth_sessions_user_expires", auth_sessions.c.user_id, auth_sessions.c.expires_at)
+Index("ix_security_audit_events_created", security_audit_events.c.created_at.desc())
+Index(
+    "ix_security_audit_events_actor_created",
+    security_audit_events.c.actor_user_id,
+    security_audit_events.c.created_at.desc(),
+)
+Index("ix_rate_limit_counters_expires", rate_limit_counters.c.expires_at)
 
 
 class DatabaseRepository:
@@ -584,7 +670,7 @@ class DatabaseRepository:
         except Exception as exc:
             self._disable_after_error("delete_session", exc)
 
-    async def save_workflow_run(self, run: WorkflowRun) -> None:
+    async def save_workflow_run(self, run: WorkflowRun, owner_user_id: str) -> None:
         if self._engine is None:
             return
 
@@ -597,6 +683,7 @@ class DatabaseRepository:
                 await connection.execute(
                     insert(workflow_runs).values(
                         run_id=UUID(run.run_id),
+                        owner_user_id=owner_user_id,
                         task=run.task,
                         model=run.model,
                         status=run.status,
@@ -654,7 +741,13 @@ class DatabaseRepository:
         finally:
             db_timer.stop()
 
-    async def list_workflow_runs(self, limit: int = 20) -> list[WorkflowRunSummary]:
+    async def list_workflow_runs(
+        self,
+        limit: int = 20,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> list[WorkflowRunSummary]:
         if self._engine is None:
             return []
 
@@ -663,6 +756,7 @@ class DatabaseRepository:
             statement = (
                 select(
                     workflow_runs.c.run_id,
+                    workflow_runs.c.owner_user_id,
                     workflow_runs.c.task,
                     workflow_runs.c.model,
                     workflow_runs.c.status,
@@ -672,6 +766,10 @@ class DatabaseRepository:
                 .order_by(workflow_runs.c.completed_at.desc())
                 .limit(limit)
             )
+            if not include_all:
+                if owner_user_id is None:
+                    return []
+                statement = statement.where(workflow_runs.c.owner_user_id == owner_user_id)
 
             async with self._engine.connect() as connection:
                 rows = (await connection.execute(statement)).mappings().all()
@@ -689,20 +787,32 @@ class DatabaseRepository:
                 status=row["status"],
                 created_at=row["created_at"].isoformat(),
                 completed_at=row["completed_at"].isoformat(),
+                owner_user_id=row["owner_user_id"],
             )
             for row in rows
         ]
 
-    async def get_workflow_run(self, run_id: str) -> RunDetail | None:
+    async def get_workflow_run(
+        self,
+        run_id: str,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> RunDetail | None:
         if self._engine is None:
             return None
 
         try:
+            statement = select(workflow_runs).where(
+                workflow_runs.c.run_id == UUID(run_id)
+            )
+            if not include_all:
+                if owner_user_id is None:
+                    return None
+                statement = statement.where(workflow_runs.c.owner_user_id == owner_user_id)
             async with self._engine.connect() as connection:
                 row = (
-                    await connection.execute(
-                        select(workflow_runs).where(workflow_runs.c.run_id == UUID(run_id))
-                    )
+                    await connection.execute(statement)
                 ).mappings().first()
                 if row is None:
                     return None
@@ -726,6 +836,9 @@ class DatabaseRepository:
 
         return RunDetail(
             run_id=str(row["run_id"]),
+            owner_user_id=(
+                str(row["owner_user_id"]) if row["owner_user_id"] else None
+            ),
             task=row["task"],
             model=row["model"],
             status=row["status"],
@@ -770,16 +883,22 @@ class DatabaseRepository:
         worker_results: list[WorkerResult],
         final_answer: str,
         output_format: str,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
     ) -> None:
         if self._engine is None:
             return
 
         try:
+            statement = update(workflow_runs).where(workflow_runs.c.run_id == UUID(run_id))
+            if not include_all:
+                if owner_user_id is None:
+                    return
+                statement = statement.where(workflow_runs.c.owner_user_id == owner_user_id)
             async with self._engine.begin() as connection:
                 await connection.execute(
-                    update(workflow_runs)
-                    .where(workflow_runs.c.run_id == UUID(run_id))
-                    .values(
+                    statement.values(
                         worker_results=[
                             result.model_dump(mode="json") for result in worker_results
                         ],
@@ -791,7 +910,7 @@ class DatabaseRepository:
         except Exception as exc:
             self._disable_after_error("update_run", exc)
 
-    async def list_agent_profiles(self) -> list[AgentProfile]:
+    async def list_global_agent_profiles(self) -> list[AgentProfile]:
         if self._engine is None:
             return []
         try:
@@ -802,36 +921,82 @@ class DatabaseRepository:
             return []
         return [AgentProfile.model_validate(dict(row)) for row in rows]
 
-    async def save_agent_profiles(self, profiles: list[AgentProfile]) -> None:
-        if self._engine is None:
-            return
-        try:
-            async with self._engine.begin() as connection:
-                await connection.execute(delete(agent_profiles))
-                if profiles:
-                    await connection.execute(
-                        insert(agent_profiles),
-                        [profile.model_dump(mode="json") for profile in profiles],
-                    )
-        except Exception as exc:
-            self._disable_after_error("save_agent_profiles", exc)
-
-    async def list_memories(self) -> list[MemoryItem]:
+    async def list_agent_profiles(self, owner_user_id: str | None = None) -> list[AgentProfile]:
+        if owner_user_id is None:
+            return await self.list_global_agent_profiles()
         if self._engine is None:
             return []
         try:
             async with self._engine.connect() as connection:
                 rows = (
                     await connection.execute(
-                        select(memory_items).order_by(memory_items.c.created_at.desc())
+                        select(user_agent_profiles).where(
+                            user_agent_profiles.c.owner_user_id == owner_user_id
+                        )
                     )
                 ).mappings().all()
+        except Exception as exc:
+            self._disable_after_error("list_user_agent_profiles", exc)
+            return []
+        return [AgentProfile.model_validate(dict(row)) for row in rows]
+
+    async def save_agent_profiles(
+        self,
+        profiles: list[AgentProfile],
+        owner_user_id: str | None = None,
+    ) -> None:
+        if self._engine is None:
+            return
+        try:
+            async with self._engine.begin() as connection:
+                if owner_user_id is None:
+                    await connection.execute(delete(agent_profiles))
+                    table = agent_profiles
+                    rows = [profile.model_dump(mode="json") for profile in profiles]
+                else:
+                    await connection.execute(
+                        delete(user_agent_profiles).where(
+                            user_agent_profiles.c.owner_user_id == owner_user_id
+                        )
+                    )
+                    table = user_agent_profiles
+                    updated_at = _now()
+                    rows = [
+                        {
+                            **profile.model_dump(mode="json"),
+                            "owner_user_id": owner_user_id,
+                            "updated_at": updated_at,
+                        }
+                        for profile in profiles
+                    ]
+                if profiles:
+                    await connection.execute(insert(table), rows)
+        except Exception as exc:
+            self._disable_after_error("save_agent_profiles", exc)
+
+    async def list_memories(
+        self,
+        *,
+        owner_user_id: str | None = None,
+        include_all: bool = False,
+    ) -> list[MemoryItem]:
+        if self._engine is None:
+            return []
+        try:
+            statement = select(memory_items).order_by(memory_items.c.created_at.desc())
+            if not include_all:
+                if owner_user_id is None:
+                    return []
+                statement = statement.where(memory_items.c.owner_user_id == owner_user_id)
+            async with self._engine.connect() as connection:
+                rows = (await connection.execute(statement)).mappings().all()
         except Exception as exc:
             self._disable_after_error("list_memories", exc)
             return []
         return [
             MemoryItem(
                 id=row["id"],
+                owner_user_id=row["owner_user_id"],
                 title=row["title"],
                 category=row["category"],
                 content=row["content"],
@@ -841,9 +1006,15 @@ class DatabaseRepository:
             for row in rows
         ]
 
-    async def create_memory(self, item_id: str, payload: MemoryCreateRequest) -> MemoryItem:
+    async def create_memory(
+        self,
+        item_id: str,
+        payload: MemoryCreateRequest,
+        owner_user_id: str,
+    ) -> MemoryItem:
         item = MemoryItem(
             id=item_id,
+            owner_user_id=owner_user_id,
             title=payload.title,
             category=payload.category,
             content=payload.content,
@@ -884,6 +1055,141 @@ class DatabaseRepository:
                 await connection.execute(insert(run_evaluations).values(**values))
         except Exception as exc:
             self._disable_after_error("save_evaluation", exc)
+
+    async def record_audit_event(
+        self,
+        *,
+        event_id: str,
+        action: str,
+        actor_user_id: str | None = None,
+        actor_email: str = "",
+        actor_role: str = "",
+        resource_type: str = "",
+        resource_id: str = "",
+        ip_address: str = "",
+        user_agent: str = "",
+        detail: Mapping[str, object] | None = None,
+    ) -> None:
+        if self._engine is None:
+            return
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    insert(security_audit_events).values(
+                        id=event_id,
+                        actor_user_id=actor_user_id,
+                        actor_email=actor_email,
+                        actor_role=actor_role,
+                        action=action,
+                        resource_type=resource_type,
+                        resource_id=resource_id,
+                        ip_address=ip_address[:64],
+                        user_agent=user_agent[:256],
+                        detail=_sanitize_audit_detail(detail or {}),
+                        created_at=_now(),
+                    )
+                )
+        except Exception as exc:
+            self._disable_after_error("record_audit_event", exc)
+
+    async def list_audit_events(self, limit: int = 100) -> list[AuditEvent]:
+        if self._engine is None:
+            return []
+        try:
+            async with self._engine.connect() as connection:
+                rows = (
+                    await connection.execute(
+                        select(security_audit_events)
+                        .order_by(security_audit_events.c.created_at.desc())
+                        .limit(limit)
+                    )
+                ).mappings().all()
+        except Exception as exc:
+            self._disable_after_error("list_audit_events", exc)
+            return []
+        return [
+            AuditEvent(
+                id=str(row["id"]),
+                actor_user_id=(
+                    str(row["actor_user_id"]) if row["actor_user_id"] else None
+                ),
+                actor_email=str(row["actor_email"]),
+                actor_role=str(row["actor_role"]),
+                action=str(row["action"]),
+                resource_type=str(row["resource_type"]),
+                resource_id=str(row["resource_id"]),
+                ip_address=str(row["ip_address"]),
+                user_agent=str(row["user_agent"]),
+                detail=cast(dict[str, object], row["detail"] or {}),
+                created_at=_datetime_to_text(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    async def increment_rate_limit(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+    ) -> int:
+        if self._engine is None:
+            return 1
+        now = _now()
+        expires_at = now + timedelta(seconds=max(1, window_seconds))
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(rate_limit_counters)
+                    .where(rate_limit_counters.c.key == key)
+                    .where(rate_limit_counters.c.expires_at <= now)
+                )
+                statement = (
+                    pg_insert(rate_limit_counters)
+                    .values(
+                        key=key,
+                        window_start=now,
+                        expires_at=expires_at,
+                        count=1,
+                        updated_at=now,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=[rate_limit_counters.c.key],
+                        set_={
+                            "count": rate_limit_counters.c.count + 1,
+                            "updated_at": now,
+                        },
+                    )
+                    .returning(rate_limit_counters.c.count)
+                )
+                row = (await connection.execute(statement)).first()
+                return int(row[0]) if row is not None else 1
+        except Exception as exc:
+            self._disable_after_error("increment_rate_limit", exc)
+            return 1
+
+    async def reset_rate_limit(self, key: str) -> None:
+        if self._engine is None:
+            return
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(rate_limit_counters).where(rate_limit_counters.c.key == key)
+                )
+        except Exception as exc:
+            self._disable_after_error("reset_rate_limit", exc)
+
+    async def delete_expired_rate_limits(self) -> None:
+        if self._engine is None:
+            return
+        try:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    delete(rate_limit_counters).where(
+                        rate_limit_counters.c.expires_at <= _now()
+                    )
+                )
+        except Exception as exc:
+            self._disable_after_error("delete_expired_rate_limits", exc)
 
     async def _verify_schema(self) -> None:
         if self._engine is None:
@@ -1005,6 +1311,35 @@ def _text_to_bool(value: str | None, default: bool) -> bool:
 
 def _bool_to_text(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _sanitize_audit_detail(value: object) -> object:
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, Mapping):
+        sanitized: dict[str, object] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            key_lower = key_text.lower()
+            sensitive_terms = (
+                "password",
+                "token",
+                "csrf",
+                "api_key",
+                "secret",
+                "database_url",
+                "db_url",
+                "dsn",
+                "authorization",
+            )
+            if any(term in key_lower for term in sensitive_terms):
+                sanitized[key_text] = "[redacted]"
+            else:
+                sanitized[key_text] = _sanitize_audit_detail(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_audit_detail(item) for item in value]
+    return value
 
 
 def _safe_db_error(exc: Exception) -> str:

@@ -81,6 +81,7 @@ class MemoryItem(BaseModel):
     content: LongText
     enabled: bool = True
     created_at: str = ""
+    owner_user_id: str | None = None
 
 
 class MemoryCreateRequest(BaseModel):
@@ -135,6 +136,7 @@ class RunRequest(PlanRequest):
 
 class WorkflowRun(BaseModel):
     run_id: str = Field(min_length=1, max_length=80)
+    owner_user_id: str | None = None
     task: str
     model: str
     status: WorkflowRunStatus = "completed"
@@ -156,6 +158,7 @@ class WorkflowRunSummary(BaseModel):
     status: str
     created_at: str
     completed_at: str
+    owner_user_id: str | None = None
 
 
 class RunDetail(WorkflowRun):
@@ -185,11 +188,28 @@ class EvaluationCompareRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class AdminHealthResponse(HealthResponse):
     openrouter_configured: bool
     database_configured: bool
     database_status: str = "disabled"
     database_error_code: str = ""
     model: str
+
+
+class AuditEvent(BaseModel):
+    id: str
+    actor_user_id: str | None = None
+    actor_email: str = ""
+    actor_role: str = ""
+    action: str
+    resource_type: str = ""
+    resource_id: str = ""
+    ip_address: str = ""
+    user_agent: str = ""
+    detail: dict[str, object] = Field(default_factory=dict)
+    created_at: str
 
 
 class AuthUser(BaseModel):
