@@ -359,3 +359,7 @@ npm run build
 - Keep `DATABASE_POOL_SIZE` small for Supabase pooler-backed deployments.
 - Monitor `/metrics`, workflow duration, provider errors, and database latency.
 - For larger traffic, move workflow execution into a queue-backed worker process.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
